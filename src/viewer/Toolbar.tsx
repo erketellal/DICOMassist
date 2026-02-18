@@ -8,6 +8,9 @@ import {
   Square,
   Grid2x2,
   Info,
+  Search,
+  MessageSquare,
+  Settings,
 } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import type { ActiveToolName, LayoutType } from './ViewportGrid';
@@ -24,6 +27,10 @@ interface ToolbarProps {
   onReset: () => void;
   showMetadata?: boolean;
   onToggleMetadata?: () => void;
+  showChat?: boolean;
+  onToggleChat?: () => void;
+  onOpenSpotlight?: () => void;
+  onOpenSettings?: () => void;
 }
 
 const tools: { name: ActiveToolName; label: string; icon: React.ReactNode }[] = [
@@ -51,6 +58,8 @@ export default function Toolbar({
   primaryAxis,
   onReset,
   showMetadata, onToggleMetadata,
+  showChat, onToggleChat,
+  onOpenSpotlight, onOpenSettings,
 }: ToolbarProps) {
   const [layoutOpen, setLayoutOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -66,6 +75,13 @@ export default function Toolbar({
     return () => document.removeEventListener('mousedown', handleClick);
   }, [layoutOpen]);
 
+  const btnClass = (active?: boolean) =>
+    `flex items-center gap-1.5 px-3 py-1.5 rounded text-sm transition-colors ${
+      active
+        ? 'bg-blue-600 text-white'
+        : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'
+    }`;
+
   return (
     <div className="flex items-center gap-1 px-3 py-2 bg-neutral-900 border-b border-neutral-800">
       {tools.map((tool) => (
@@ -73,11 +89,7 @@ export default function Toolbar({
           key={tool.name}
           onClick={() => onToolChange(activeTool === tool.name && tool.name !== 'WindowLevel' ? 'WindowLevel' : tool.name)}
           title={tool.label}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm transition-colors ${
-            activeTool === tool.name
-              ? 'bg-blue-600 text-white'
-              : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'
-          }`}
+          className={btnClass(activeTool === tool.name)}
         >
           {tool.icon}
           <span className="hidden sm:inline">{tool.label}</span>
@@ -89,7 +101,7 @@ export default function Toolbar({
       <button
         onClick={onReset}
         title="Reset viewport"
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors"
+        className={btnClass()}
       >
         <RotateCcw className="w-5 h-5" />
         <span className="hidden sm:inline">Reset</span>
@@ -129,7 +141,7 @@ export default function Toolbar({
         <button
           onClick={() => setLayoutOpen(!layoutOpen)}
           title="Layout"
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-sm text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 transition-colors"
+          className={btnClass()}
         >
           <LayoutGrid className="w-5 h-5" />
           <span className="hidden sm:inline">Layout</span>
@@ -157,22 +169,53 @@ export default function Toolbar({
         )}
       </div>
 
-      {/* Spacer to push Info toggle to the right */}
+      {/* Spacer */}
       <div className="flex-1" />
+
+      {/* Analyze button (Cmd+K) */}
+      {onOpenSpotlight && (
+        <button
+          onClick={onOpenSpotlight}
+          title="Analyze (Cmd+K)"
+          className={btnClass()}
+        >
+          <Search className="w-5 h-5" />
+          <span className="hidden sm:inline">Analyze</span>
+        </button>
+      )}
+
+      {/* Chat toggle */}
+      {onToggleChat && (
+        <button
+          onClick={onToggleChat}
+          title="Chat (Cmd+B)"
+          className={btnClass(showChat)}
+        >
+          <MessageSquare className="w-5 h-5" />
+          <span className="hidden sm:inline">Chat</span>
+        </button>
+      )}
 
       {/* Study Info toggle */}
       {onToggleMetadata && (
         <button
           onClick={onToggleMetadata}
           title="Study Info"
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm transition-colors ${
-            showMetadata
-              ? 'bg-blue-600 text-white'
-              : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'
-          }`}
+          className={btnClass(showMetadata)}
         >
           <Info className="w-5 h-5" />
           <span className="hidden sm:inline">Info</span>
+        </button>
+      )}
+
+      {/* Settings */}
+      {onOpenSettings && (
+        <button
+          onClick={onOpenSettings}
+          title="LLM Settings"
+          className={btnClass()}
+        >
+          <Settings className="w-5 h-5" />
         </button>
       )}
     </div>
