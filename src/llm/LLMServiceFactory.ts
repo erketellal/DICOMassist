@@ -1,5 +1,5 @@
 import type { StudyMetadata } from '../dicom/types';
-import type { SelectionPlan, ChatMessage, ProviderConfig, LLMService } from './types';
+import type { SelectionPlan, ChatMessage, ProviderConfig, LLMService, ViewportContext } from './types';
 import {
   buildSelectionSystemPrompt,
   buildSelectionUserPrompt,
@@ -68,10 +68,10 @@ class ClaudeService implements LLMService {
     this.apiKey = apiKey;
   }
 
-  async getSelectionPlan(metadata: StudyMetadata, clinicalHint: string): Promise<SelectionPlan> {
+  async getSelectionPlan(metadata: StudyMetadata, clinicalHint: string, viewportContext?: ViewportContext): Promise<SelectionPlan> {
     const response = await this.callClaude({
       system: buildSelectionSystemPrompt(),
-      messages: [{ role: 'user', content: buildSelectionUserPrompt(metadata, clinicalHint) }],
+      messages: [{ role: 'user', content: buildSelectionUserPrompt(metadata, clinicalHint, viewportContext) }],
       temperature: 0.1,
       maxTokens: 1024,
     });
@@ -83,6 +83,7 @@ class ClaudeService implements LLMService {
     metadata: StudyMetadata,
     clinicalHint: string,
     plan: SelectionPlan,
+    sliceLabels: string[],
   ): Promise<string> {
     const imageContents = await Promise.all(
       images.map(async (blob, i) => [
@@ -96,7 +97,7 @@ class ClaudeService implements LLMService {
         },
         {
           type: 'text' as const,
-          text: `Image ${i + 1} of ${images.length}`,
+          text: sliceLabels[i] ?? `Image ${i + 1}`,
         },
       ]),
     );
@@ -105,7 +106,7 @@ class ClaudeService implements LLMService {
       ...imageContents.flat(),
       {
         type: 'text' as const,
-        text: buildAnalysisUserPrompt(metadata, clinicalHint, plan, images.length),
+        text: buildAnalysisUserPrompt(metadata, clinicalHint, plan, sliceLabels),
       },
     ];
 
@@ -179,11 +180,11 @@ class OllamaService implements LLMService {
     this.baseUrl = baseUrl;
   }
 
-  async getSelectionPlan(metadata: StudyMetadata, clinicalHint: string): Promise<SelectionPlan> {
+  async getSelectionPlan(metadata: StudyMetadata, clinicalHint: string, viewportContext?: ViewportContext): Promise<SelectionPlan> {
     const response = await this.callOllama({
       model: this.textModel,
       system: buildSelectionSystemPrompt(),
-      userContent: buildSelectionUserPrompt(metadata, clinicalHint),
+      userContent: buildSelectionUserPrompt(metadata, clinicalHint, viewportContext),
     });
     return parseSelectionPlan(response);
   }
@@ -193,9 +194,11 @@ class OllamaService implements LLMService {
     metadata: StudyMetadata,
     clinicalHint: string,
     plan: SelectionPlan,
+    sliceLabels: string[],
   ): Promise<string> {
     const base64Images = await Promise.all(images.map(blobToBase64));
-    const userContent = buildAnalysisUserPrompt(metadata, clinicalHint, plan, images.length);
+    const userContent = buildAnalysisUserPrompt(metadata, clinicalHint, plan, sliceLabels)
+      + `\n\nThe images are labeled in order: ${sliceLabels.join(', ')}.`;
 
     return this.callOllama({
       model: this.visionModel,

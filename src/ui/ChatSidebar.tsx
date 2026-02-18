@@ -1,7 +1,7 @@
-import { useState, useRef, useEffect } from 'react';
-import { X, Send, Trash2, AlertCircle, Loader2, CheckCircle, Circle, ChevronDown, ChevronRight } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { X, Send, Trash2, AlertCircle, Loader2, CheckCircle, Circle, ChevronDown, ChevronRight, Eye } from 'lucide-react';
 import type { ChatMessage } from '../llm/types';
-import type { ChatStatus, PipelineState, PipelineStep } from '../llm/useLLMChat';
+import type { ChatStatus, PipelineState, PipelineStep, SliceMapping } from '../llm/useLLMChat';
 
 interface ChatSidebarProps {
   messages: ChatMessage[];
@@ -12,6 +12,7 @@ interface ChatSidebarProps {
   onSendFollowUp: (text: string) => void;
   onClear: () => void;
   onClose: () => void;
+  onNavigateToSlice: (mapping: SliceMapping) => void;
 }
 
 export default function ChatSidebar({
@@ -23,13 +24,13 @@ export default function ChatSidebar({
   onSendFollowUp,
   onClear,
   onClose,
+  onNavigateToSlice,
 }: ChatSidebarProps) {
   const [input, setInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const busy = status !== 'idle' && status !== 'error';
 
-  // Auto-scroll to bottom on new messages or pipeline updates
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages, status, pipeline]);
@@ -49,7 +50,7 @@ export default function ChatSidebar({
   };
 
   return (
-    <div className="w-80 h-full bg-neutral-900 border-l border-neutral-700 flex flex-col overflow-hidden">
+    <div className="w-96 h-full bg-neutral-900 border-l border-neutral-700 flex flex-col overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-neutral-700 shrink-0">
         <span className="text-sm font-medium text-neutral-200">Analysis Chat</span>
@@ -81,21 +82,23 @@ export default function ChatSidebar({
           </div>
         )}
 
-        {messages.map((msg, i) => (
-          <div key={msg.id}>
-            <MessageBubble message={msg} />
-            {/* Show pipeline after the first user message */}
-            {msg.role === 'user' && i === messages.length - 1 && pipeline && (
-              <PipelineView pipeline={pipeline} />
-            )}
-            {msg.role === 'user' && i < messages.length - 1 && pipeline && messages[i + 1]?.role === 'assistant' && i === 0 && (
-              <PipelineView pipeline={pipeline} />
-            )}
-          </div>
-        ))}
-
-        {/* Show pipeline when only user message exists (still processing) */}
-        {messages.length === 1 && messages[0].role === 'user' && pipeline && busy && null /* already shown above */}
+        {messages.map((msg, i) => {
+          const isFirstUser = msg.role === 'user' && i === 0;
+          const showPipeline = isFirstUser && pipeline;
+          return (
+            <div key={msg.id}>
+              <MessageBubble message={msg} />
+              {showPipeline && <PipelineView pipeline={pipeline} />}
+              {msg.role === 'assistant' && (
+                <AssistantMessage
+                  content={msg.content}
+                  sliceMappings={pipeline?.sliceMappings ?? []}
+                  onNavigate={onNavigateToSlice}
+                />
+              )}
+            </div>
+          );
+        })}
 
         {busy && statusText && status === 'following-up' && (
           <div className="flex items-center gap-2 text-xs text-blue-400">
@@ -168,6 +171,9 @@ function PipelineView({ pipeline }: { pipeline: PipelineState }) {
           {pipeline.plan && (
             <PlanDetail plan={pipeline.plan} />
           )}
+          {pipeline.sliceMappings.length > 0 && (
+            <SliceMappingDetail mappings={pipeline.sliceMappings} totalSlices={pipeline.totalSlices} />
+          )}
         </div>
       )}
     </div>
@@ -211,7 +217,292 @@ function PlanDetail({ plan }: { plan: import('../llm/types').SelectionPlan }) {
   );
 }
 
-// --- Message Components ---
+function SliceMappingDetail({ mappings, totalSlices }: { mappings: SliceMapping[]; totalSlices: number }) {
+  const [showAll, setShowAll] = useState(false);
+  const labels = mappings.map((m) => m.label);
+  const preview = showAll ? labels : labels.slice(0, 6);
+  const hasMore = labels.length > 6;
+
+  return (
+    <div className="mt-1.5 ml-5.5 pl-2 border-l border-neutral-700 text-[10px] text-neutral-500 space-y-0.5">
+      <p className="text-neutral-400 font-medium">
+        Sent to vision model: {mappings.length} of {totalSlices} slices
+      </p>
+      <div className="flex flex-wrap gap-1">
+        {preview.map((label, i) => (
+          <span key={i} className="px-1.5 py-0.5 bg-neutral-700/50 rounded text-neutral-400">
+            {label}
+          </span>
+        ))}
+        {hasMore && !showAll && (
+          <button
+            onClick={() => setShowAll(true)}
+            className="px-1.5 py-0.5 text-blue-400 hover:text-blue-300"
+          >
+            +{labels.length - 6} more
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --- Assistant Message with Interactive Slice References ---
+
+// Matches: "Slice 45/187", "Slices 45-66/187", "Slice 45", "Slices 45–66"
+// Also matches legacy "Image N" format as fallback
+const SLICE_REF_PATTERN = /\b[Ss]lices?\s+(\d+)(?:\s*[-–]\s*(\d+))?(?:\/(\d+))?\b/g;
+const IMAGE_REF_PATTERN = /\b[Ii]mages?\s+(\d+)(?:\s*[-–]\s*(\d+))?\b/g;
+
+interface ParsedSegment {
+  type: 'text' | 'slice-ref';
+  content: string;
+  fromInstance?: number;
+  toInstance?: number;
+  total?: number;
+  isLegacyImageRef?: boolean;
+}
+
+function parseSliceRefs(text: string): ParsedSegment[] {
+  // Collect all matches from both patterns with their positions
+  const allMatches: { index: number; length: number; from: number; to: number; total?: number; content: string; isLegacy: boolean }[] = [];
+
+  for (const match of text.matchAll(SLICE_REF_PATTERN)) {
+    allMatches.push({
+      index: match.index,
+      length: match[0].length,
+      from: parseInt(match[1], 10),
+      to: match[2] ? parseInt(match[2], 10) : parseInt(match[1], 10),
+      total: match[3] ? parseInt(match[3], 10) : undefined,
+      content: match[0],
+      isLegacy: false,
+    });
+  }
+
+  for (const match of text.matchAll(IMAGE_REF_PATTERN)) {
+    // Only add if not overlapping with a slice ref
+    const overlaps = allMatches.some(
+      (m) => match.index < m.index + m.length && match.index + match[0].length > m.index,
+    );
+    if (!overlaps) {
+      allMatches.push({
+        index: match.index,
+        length: match[0].length,
+        from: parseInt(match[1], 10),
+        to: match[2] ? parseInt(match[2], 10) : parseInt(match[1], 10),
+        content: match[0],
+        isLegacy: true,
+      });
+    }
+  }
+
+  // Sort by position
+  allMatches.sort((a, b) => a.index - b.index);
+
+  const segments: ParsedSegment[] = [];
+  let lastIndex = 0;
+
+  for (const match of allMatches) {
+    if (match.index > lastIndex) {
+      segments.push({ type: 'text', content: text.slice(lastIndex, match.index) });
+    }
+    segments.push({
+      type: 'slice-ref',
+      content: match.content,
+      fromInstance: match.from,
+      toInstance: match.to,
+      total: match.total,
+      isLegacyImageRef: match.isLegacy,
+    });
+    lastIndex = match.index + match.length;
+  }
+
+  if (lastIndex < text.length) {
+    segments.push({ type: 'text', content: text.slice(lastIndex) });
+  }
+
+  return segments.length > 0 ? segments : [{ type: 'text', content: text }];
+}
+
+function AssistantMessage({
+  content,
+  sliceMappings,
+  onNavigate,
+}: {
+  content: string;
+  sliceMappings: SliceMapping[];
+  onNavigate: (mapping: SliceMapping) => void;
+}) {
+  const handleSliceClick = useCallback((fromInstance: number, toInstance: number, isLegacy: boolean) => {
+    let mapping: SliceMapping | undefined;
+
+    if (isLegacy) {
+      // Legacy "Image N" — fromInstance/toInstance are 1-based image indices
+      const midImage = Math.round((fromInstance + toInstance) / 2);
+      mapping = sliceMappings.find((m) => m.imageIndex === midImage)
+        ?? sliceMappings.find((m) => m.imageIndex >= fromInstance && m.imageIndex <= toInstance);
+    } else {
+      // New "Slice X/Y" — fromInstance/toInstance are actual instance numbers
+      const midInstance = Math.round((fromInstance + toInstance) / 2);
+      // Find closest mapping to midInstance
+      mapping = sliceMappings.reduce<SliceMapping | undefined>((best, m) => {
+        if (m.instanceNumber < fromInstance || m.instanceNumber > toInstance) return best;
+        if (!best) return m;
+        return Math.abs(m.instanceNumber - midInstance) < Math.abs(best.instanceNumber - midInstance) ? m : best;
+      }, undefined);
+      // If no exact range match, find the nearest slice
+      if (!mapping) {
+        mapping = sliceMappings.reduce<SliceMapping | undefined>((best, m) => {
+          if (!best) return m;
+          return Math.abs(m.instanceNumber - midInstance) < Math.abs(best.instanceNumber - midInstance) ? m : best;
+        }, undefined);
+      }
+    }
+
+    if (mapping) {
+      onNavigate(mapping);
+    }
+  }, [sliceMappings, onNavigate]);
+
+  const lines = content.split('\n');
+
+  return (
+    <div className="mt-1 text-sm text-neutral-200 space-y-0.5">
+      {lines.map((line, i) => (
+        <FormattedLine
+          key={i}
+          line={line}
+          sliceMappings={sliceMappings}
+          onSliceClick={handleSliceClick}
+        />
+      ))}
+    </div>
+  );
+}
+
+function FormattedLine({
+  line,
+  sliceMappings,
+  onSliceClick,
+}: {
+  line: string;
+  sliceMappings: SliceMapping[];
+  onSliceClick: (from: number, to: number, isLegacy: boolean) => void;
+}) {
+  // Empty line
+  if (line.trim() === '') {
+    return <div className="h-1.5" />;
+  }
+
+  // Headers: ## or **Header:**
+  if (line.startsWith('## ')) {
+    return (
+      <h3 className="text-xs font-semibold text-blue-400 uppercase tracking-wide mt-3 mb-1 border-b border-neutral-800 pb-1">
+        {line.slice(3)}
+      </h3>
+    );
+  }
+
+  // Bold-only lines (section titles like **Overall Impression:**)
+  const boldLineMatch = line.match(/^\*\*(.+?)\*\*:?\s*$/);
+  if (boldLineMatch) {
+    return (
+      <p className="font-semibold text-neutral-100 mt-2.5 mb-0.5">{boldLineMatch[1]}</p>
+    );
+  }
+
+  // Bullet points
+  const bulletMatch = line.match(/^(\s*)[-•*]\s+(.*)/);
+  if (bulletMatch) {
+    const indent = bulletMatch[1].length > 0;
+    return (
+      <div className={`flex gap-1.5 ${indent ? 'ml-4' : 'ml-1'} my-0.5`}>
+        <span className="text-neutral-600 shrink-0 mt-0.5">&#x2022;</span>
+        <span className="text-neutral-300">
+          <InlineContent text={bulletMatch[2]} sliceMappings={sliceMappings} onSliceClick={onSliceClick} />
+        </span>
+      </div>
+    );
+  }
+
+  // Numbered list
+  const numberedMatch = line.match(/^(\d+)\.\s+(.*)/);
+  if (numberedMatch) {
+    return (
+      <div className="flex gap-2 ml-1 my-0.5">
+        <span className="text-blue-400 shrink-0 text-xs font-medium mt-0.5">{numberedMatch[1]}.</span>
+        <span className="text-neutral-300">
+          <InlineContent text={numberedMatch[2]} sliceMappings={sliceMappings} onSliceClick={onSliceClick} />
+        </span>
+      </div>
+    );
+  }
+
+  // Regular paragraph
+  return (
+    <p className="text-neutral-300 my-0.5">
+      <InlineContent text={line} sliceMappings={sliceMappings} onSliceClick={onSliceClick} />
+    </p>
+  );
+}
+
+function InlineContent({
+  text,
+  sliceMappings,
+  onSliceClick,
+}: {
+  text: string;
+  sliceMappings: SliceMapping[];
+  onSliceClick: (from: number, to: number, isLegacy: boolean) => void;
+}) {
+  const segments = parseSliceRefs(text);
+
+  return (
+    <>
+      {segments.map((seg, i) => {
+        if (seg.type === 'slice-ref' && seg.fromInstance != null && seg.toInstance != null) {
+          const isLegacy = seg.isLegacyImageRef ?? false;
+          // Check if we have a mapping for this reference
+          const hasMapping = isLegacy
+            ? sliceMappings.some((m) => m.imageIndex >= seg.fromInstance! && m.imageIndex <= seg.toInstance!)
+            : sliceMappings.some((m) => m.instanceNumber >= seg.fromInstance! && m.instanceNumber <= seg.toInstance!)
+              || sliceMappings.length > 0; // For slice refs, always show as clickable if we have any mappings (will navigate to nearest)
+          if (hasMapping) {
+            return (
+              <button
+                key={i}
+                onClick={() => onSliceClick(seg.fromInstance!, seg.toInstance!, isLegacy)}
+                className="inline-flex items-center gap-0.5 px-1.5 py-0 rounded bg-blue-900/40 border border-blue-700/50 text-blue-300 hover:bg-blue-800/50 hover:text-blue-200 transition-colors text-xs font-medium mx-0.5 cursor-pointer"
+                title={`Go to ${seg.content} in viewer`}
+              >
+                <Eye className="w-3 h-3" />
+                {seg.content}
+              </button>
+            );
+          }
+        }
+        // Handle inline bold: **text**
+        return <BoldText key={i} text={seg.content} />;
+      })}
+    </>
+  );
+}
+
+function BoldText({ text }: { text: string }) {
+  const parts = text.split(/(\*\*.*?\*\*)/g);
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.startsWith('**') && part.endsWith('**')) {
+          return <strong key={i} className="text-neutral-100 font-semibold">{part.slice(2, -2)}</strong>;
+        }
+        return <span key={i}>{part}</span>;
+      })}
+    </>
+  );
+}
+
+// --- Message Bubble (user only — assistant handled by AssistantMessage) ---
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === 'user') {
@@ -223,45 +514,6 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       </div>
     );
   }
-
-  return (
-    <div className="max-w-[95%]">
-      <div className="text-sm text-neutral-200 space-y-1">
-        <FormattedText text={message.content} />
-      </div>
-    </div>
-  );
-}
-
-function FormattedText({ text }: { text: string }) {
-  const lines = text.split('\n');
-  const elements: React.ReactNode[] = [];
-  let key = 0;
-
-  for (const line of lines) {
-    if (line.startsWith('## ')) {
-      elements.push(
-        <h3 key={key++} className="text-xs font-semibold text-neutral-400 uppercase tracking-wide mt-3 mb-1">
-          {line.slice(3)}
-        </h3>
-      );
-    } else if (line.startsWith('- ') || line.startsWith('* ')) {
-      elements.push(
-        <div key={key++} className="flex gap-1.5 ml-1">
-          <span className="text-neutral-500 shrink-0">&bull;</span>
-          <span>{line.slice(2)}</span>
-        </div>
-      );
-    } else if (line.startsWith('**') && line.endsWith('**')) {
-      elements.push(
-        <p key={key++} className="font-medium text-neutral-100 mt-2">{line.slice(2, -2)}</p>
-      );
-    } else if (line.trim() === '') {
-      elements.push(<div key={key++} className="h-1" />);
-    } else {
-      elements.push(<p key={key++}>{line}</p>);
-    }
-  }
-
-  return <>{elements}</>;
+  // Assistant messages are rendered by AssistantMessage
+  return null;
 }

@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import type { StudyMetadata } from '../dicom/types';
-import type { SelectionPlan, ChatMessage, ProviderConfig } from './types';
+import type { SelectionPlan, ChatMessage, ProviderConfig, ViewportContext } from './types';
 import { createLLMService } from './LLMServiceFactory';
 import { selectSlices } from '../filtering/SliceSelector';
 import { exportSlicesToJpeg } from '../filtering/SliceExporter';
@@ -15,11 +15,21 @@ export interface PipelineStep {
   durationMs?: number;
 }
 
+export interface SliceMapping {
+  imageIndex: number;   // 1-based position in the selected subset
+  instanceNumber: number;
+  imageId: string;
+  zPosition: number;
+  label: string;        // e.g. "Slice 45/187"
+}
+
 export interface PipelineState {
   steps: PipelineStep[];
   plan: SelectionPlan | null;
   sliceCount: number;
+  totalSlices: number;
   exportedSizes: string[];
+  sliceMappings: SliceMapping[];
 }
 
 interface UseLLMChatReturn {
@@ -29,7 +39,7 @@ interface UseLLMChatReturn {
   error: string | null;
   currentPlan: SelectionPlan | null;
   pipeline: PipelineState | null;
-  startAnalysis: (hint: string) => Promise<void>;
+  startAnalysis: (hint: string, viewportContext?: ViewportContext) => Promise<void>;
   sendFollowUp: (text: string) => Promise<void>;
   clearChat: () => void;
 }
@@ -62,6 +72,55 @@ function updateStep(
   return steps.map((s) => (s.id === id ? { ...s, ...updates } : s));
 }
 
+const MIN_SLICES_IN_RANGE = 40; // Minimum instance range to ensure decent coverage
+
+/**
+ * Fix common LLM planning mistakes:
+ * - Single-slice range (e.g., [128, 128]) → expand to ±50 around center
+ * - Too-narrow range → expand to at least MIN_SLICES_IN_RANGE
+ * - Missing samplingParam for uniform → default to 15
+ * - "all" strategy on large ranges → switch to uniform
+ */
+function fixSelectionPlan(plan: SelectionPlan, metadata: StudyMetadata): SelectionPlan {
+  const series = metadata.series.find((s) => String(s.seriesNumber) === plan.targetSeries);
+  if (!series) return plan;
+
+  const [minInst, maxInst] = series.instanceNumberRange;
+  let [rangeStart, rangeEnd] = plan.sliceRange;
+  const rangeSize = rangeEnd - rangeStart + 1;
+
+  // Fix: single slice or tiny range → expand around center
+  if (rangeSize < MIN_SLICES_IN_RANGE) {
+    const center = Math.round((rangeStart + rangeEnd) / 2);
+    const halfRange = Math.round(MIN_SLICES_IN_RANGE / 2);
+    rangeStart = Math.max(minInst, center - halfRange);
+    rangeEnd = Math.min(maxInst, center + halfRange);
+    console.warn(`[PlanFix] Range too narrow (${plan.sliceRange[0]}–${plan.sliceRange[1]}), expanded to ${rangeStart}–${rangeEnd}`);
+  }
+
+  // Fix: "all" on a large range → switch to uniform
+  let { samplingStrategy, samplingParam } = plan;
+  const newRangeSize = rangeEnd - rangeStart + 1;
+  if (samplingStrategy === 'all' && newRangeSize > 20) {
+    samplingStrategy = 'uniform';
+    samplingParam = 15;
+    console.warn(`[PlanFix] "all" on ${newRangeSize} slices → switched to uniform(15)`);
+  }
+
+  // Fix: uniform without param → default to 15
+  if (samplingStrategy === 'uniform' && (samplingParam == null || samplingParam < 1)) {
+    samplingParam = 15;
+    console.warn('[PlanFix] Missing samplingParam for uniform, defaulting to 15');
+  }
+
+  return {
+    ...plan,
+    sliceRange: [rangeStart, rangeEnd],
+    samplingStrategy,
+    samplingParam,
+  };
+}
+
 export function useLLMChat(
   metadata: StudyMetadata | null,
   providerConfig: ProviderConfig,
@@ -73,7 +132,7 @@ export function useLLMChat(
   const [pipeline, setPipeline] = useState<PipelineState | null>(null);
   const abortRef = useRef(false);
 
-  const startAnalysis = useCallback(async (hint: string) => {
+  const startAnalysis = useCallback(async (hint: string, viewportContext?: ViewportContext) => {
     if (!metadata) return;
     abortRef.current = false;
     setError(null);
@@ -87,7 +146,7 @@ export function useLLMChat(
       { id: 'export', label: 'Exporting images', status: 'pending' },
       { id: 'analyze', label: `Analyzing images (${visionModel})`, status: 'pending' },
     ];
-    setPipeline({ steps: initialSteps, plan: null, sliceCount: 0, exportedSizes: [] });
+    setPipeline({ steps: initialSteps, plan: null, sliceCount: 0, totalSlices: 0, exportedSizes: [], sliceMappings: [] });
 
     const userMsg: ChatMessage = {
       id: makeId(),
@@ -121,9 +180,15 @@ export function useLLMChat(
         })),
       });
 
-      const plan = await service.getSelectionPlan(metadata, hint);
+      const rawPlan = await service.getSelectionPlan(metadata, hint, viewportContext);
       const t1 = performance.now();
       if (abortRef.current) { console.groupEnd(); return; }
+
+      console.log('🎯 Call 1 — Raw plan:', rawPlan);
+      const plan = fixSelectionPlan(rawPlan, metadata);
+      if (plan.sliceRange[0] !== rawPlan.sliceRange[0] || plan.sliceRange[1] !== rawPlan.sliceRange[1]) {
+        console.log('🔧 Plan fixed:', `[${rawPlan.sliceRange}] → [${plan.sliceRange}]`);
+      }
 
       setCurrentPlan(plan);
       const planDetail = `Series #${plan.targetSeries}, instances ${plan.sliceRange[0]}–${plan.sliceRange[1]}, W:${plan.windowWidth} C:${plan.windowCenter}`;
@@ -136,8 +201,6 @@ export function useLLMChat(
           durationMs: Math.round(t1 - t0),
         }),
       }));
-      console.log('🎯 Call 1 — Selection Plan:', plan);
-
       // Step 2: Select slices
       setPipeline((p) => p && ({
         ...p,
@@ -159,9 +222,20 @@ export function useLLMChat(
       }
 
       const sliceDetail = `${selectedSlices.length} slices (z: ${selectedSlices[0].zPosition.toFixed(0)} to ${selectedSlices[selectedSlices.length - 1].zPosition.toFixed(0)}mm)`;
+      const targetSeries = metadata.series.find((s) => String(s.seriesNumber) === plan.targetSeries);
+      const totalSlices = targetSeries?.slices.length ?? selectedSlices.length;
+      const mappings: SliceMapping[] = selectedSlices.map((s, i) => ({
+        imageIndex: i + 1,
+        instanceNumber: s.instanceNumber,
+        imageId: s.imageId,
+        zPosition: s.zPosition,
+        label: `Slice ${s.instanceNumber}/${totalSlices}`,
+      }));
       setPipeline((p) => p && ({
         ...p,
         sliceCount: selectedSlices.length,
+        totalSlices,
+        sliceMappings: mappings,
         steps: updateStep(p.steps, 'select', { status: 'done', detail: sliceDetail }),
       }));
 
@@ -180,6 +254,7 @@ export function useLLMChat(
       const sizes = exported.map((e) => `${(e.blob.size / 1024).toFixed(0)}KB`);
       const totalSize = exported.reduce((sum, e) => sum + e.blob.size, 0);
       console.log(`🖼️ Exported ${exported.length} JPEG images (sizes: ${sizes.join(', ')})`);
+      console.log('📋 Slice mappings:', mappings.map((m) => `${m.label} (z=${m.zPosition.toFixed(1)})`));
 
       setPipeline((p) => p && ({
         ...p,
@@ -200,8 +275,9 @@ export function useLLMChat(
       }));
 
       const blobs = exported.map((e) => e.blob);
-      console.log(`📡 Call 2 — Sending ${blobs.length} images to LLM...`);
-      const analysisText = await service.analyzeSlices(blobs, metadata, hint, plan);
+      const sliceLabels = mappings.map((m) => m.label);
+      console.log(`📡 Call 2 — Sending ${blobs.length} images to LLM (${sliceLabels.join(', ')})...`);
+      const analysisText = await service.analyzeSlices(blobs, metadata, hint, plan, sliceLabels);
       const t5 = performance.now();
       if (abortRef.current) { console.groupEnd(); return; }
 

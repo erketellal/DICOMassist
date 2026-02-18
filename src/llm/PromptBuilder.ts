@@ -1,5 +1,5 @@
 import type { StudyMetadata, SeriesMetadata } from '../dicom/types';
-import type { SelectionPlan } from './types';
+import type { SelectionPlan, ViewportContext } from './types';
 
 const DISCLAIMER =
   'IMPORTANT: This is a research/portfolio tool, NOT for clinical diagnosis. ' +
@@ -52,31 +52,47 @@ export function buildSelectionSystemPrompt(): string {
     '',
     'Given study metadata and a clinical hint, output a JSON object (no markdown fences) with these exact fields:',
     '- targetSeries: string — the Series Number (e.g. "3") of the best series for this clinical question',
-    '- sliceRange: [number, number] — inclusive instance number range [start, end]',
-    '- samplingStrategy: "every_nth" | "uniform" | "all"',
-    '- samplingParam: number — N for every_nth, count for uniform, omit for all',
+    '- sliceRange: [number, number] — inclusive instance number range [start, end] covering the anatomical region of interest',
+    '- samplingStrategy: "uniform" | "every_nth" | "all"',
+    '- samplingParam: number — for "uniform": the TOTAL number of slices to pick (10-20). For "every_nth": pick every Nth slice. Omit for "all".',
     '- windowCenter: number — optimal window center for this clinical question',
     '- windowWidth: number — optimal window width for this clinical question',
     '- reasoning: string — brief explanation of your selections',
     '',
+    'CRITICAL CONSTRAINT: We can only send a MAXIMUM of 20 images to the vision model.',
+    '- ALWAYS use "uniform" with samplingParam between 10 and 20 for ranges with more than 20 slices.',
+    '- Only use "all" if the slice range contains ≤20 slices.',
+    '- Never set samplingParam above 20.',
+    '- The vision model will see these sampled slices and analyze them — it will NOT see every slice.',
+    '',
     'Guidelines:',
     '- Choose the series with the best plane, kernel, and resolution for the clinical question',
-    '- Select a slice range that covers the anatomical region of interest',
+    '- Select a slice range that covers the anatomical region of interest (narrower is better — focus on where pathology is expected)',
     '- Use appropriate windowing (e.g., liver: W=150 C=70, lung: W=1500 C=-600, bone: W=2000 C=400, brain: W=80 C=40, soft tissue: W=400 C=40)',
-    '- Target 10-20 slices total. Use "all" only if the range is ≤20 slices',
+    '- For lesion detection: narrow the sliceRange to the relevant organ rather than selecting the entire series',
     '- Output ONLY the JSON object, no other text',
   ].join('\n');
 }
 
-export function buildSelectionUserPrompt(metadata: StudyMetadata, clinicalHint: string): string {
-  return [
+export function buildSelectionUserPrompt(metadata: StudyMetadata, clinicalHint: string, viewportContext?: ViewportContext): string {
+  const lines = [
     formatMetadataSummary(metadata),
     '',
-    `=== CLINICAL QUESTION ===`,
-    clinicalHint,
-    '',
-    'Based on the available series and the clinical question, provide your slice selection plan as a JSON object.',
-  ].join('\n');
+  ];
+
+  if (viewportContext) {
+    lines.push('=== CURRENT VIEWPORT POSITION ===');
+    lines.push(`The user is currently viewing Series #${viewportContext.seriesNumber}, slice #${viewportContext.currentInstanceNumber} of ${viewportContext.totalSlicesInSeries} (z=${viewportContext.currentZPosition.toFixed(1)}mm).`);
+    lines.push('Center your slice selection around this position — the user has scrolled here because this region is clinically relevant.');
+    lines.push('');
+  }
+
+  lines.push('=== CLINICAL QUESTION ===');
+  lines.push(clinicalHint);
+  lines.push('');
+  lines.push('Based on the available series and the clinical question, provide your slice selection plan as a JSON object.');
+
+  return lines.join('\n');
 }
 
 export function buildAnalysisSystemPrompt(): string {
@@ -106,9 +122,10 @@ export function buildAnalysisUserPrompt(
   metadata: StudyMetadata,
   clinicalHint: string,
   plan: SelectionPlan,
-  sliceCount: number,
+  sliceLabels: string[],
 ): string {
   const series = metadata.series.find((s) => String(s.seriesNumber) === plan.targetSeries);
+  const totalSlices = series?.slices.length ?? sliceLabels.length;
   const lines = [
     `Clinical question: ${clinicalHint}`,
     '',
@@ -119,11 +136,25 @@ export function buildAnalysisUserPrompt(
   if (series) {
     lines.push(`Viewing Series #${series.seriesNumber}: ${series.seriesDescription || '(no description)'}`);
     lines.push(`Plane: ${series.anatomicalPlane} | Kernel: ${series.convolutionKernel ?? 'N/A'}`);
+    lines.push(`Total slices in series: ${totalSlices} (instance #${series.instanceNumberRange[0]}–#${series.instanceNumberRange[1]})`);
+    if (series.zCoverageInMm > 0) {
+      lines.push(`Full z-coverage: ${series.zCoverageInMm.toFixed(1)}mm (z=${series.zMin.toFixed(1)} to ${series.zMax.toFixed(1)})`);
+    }
+    if (series.sliceThickness != null) {
+      lines.push(`Slice thickness: ${series.sliceThickness}mm`);
+    }
   }
   lines.push(`Window: W=${plan.windowWidth} C=${plan.windowCenter}`);
+  lines.push(`Slice selection: instances #${plan.sliceRange[0]}–#${plan.sliceRange[1]}, ${plan.samplingStrategy}${plan.samplingParam ? ` (${plan.samplingParam})` : ''}`);
   lines.push(`Selection reasoning: ${plan.reasoning}`);
   lines.push('');
-  lines.push(`${sliceCount} images are provided, ordered by slice position.`);
+  lines.push(`IMPORTANT CONTEXT: You are viewing ${sliceLabels.length} sampled slices from a series of ${totalSlices} total slices. There are gaps between the images you see. A finding visible in one image may span more slices than shown. Account for this sampling when describing extent and when noting limitations.`);
+  lines.push('');
+  lines.push(`You are provided EXACTLY ${sliceLabels.length} images, each labeled with its slice number out of ${totalSlices} total (e.g., "Slice 45/${totalSlices}").`);
+  lines.push(`The labels in order are: ${sliceLabels.join(', ')}.`);
+  lines.push(`When describing findings, reference slices using their label (e.g., "Slice 45/${totalSlices}") so the reader can navigate to them.`);
+  lines.push(`You may reference a range of slices (e.g., "Slices 45–66/${totalSlices}").`);
+  lines.push(`IMPORTANT: Only reference the slice numbers listed above. Do NOT reference slice numbers that were not provided.`);
   lines.push('Please analyze these images in the context of the clinical question.');
 
   return lines.join('\n');

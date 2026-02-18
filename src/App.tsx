@@ -12,8 +12,8 @@ import ChatSidebar from './ui/ChatSidebar';
 import SettingsPanel from './ui/SettingsPanel';
 import type { AnatomicalPlane } from './dicom/orientationUtils';
 import type { StudyMetadata } from './dicom/types';
-import type { ProviderConfig } from './llm/types';
-import { useLLMChat } from './llm/useLLMChat';
+import type { ProviderConfig, ViewportContext } from './llm/types';
+import { useLLMChat, type SliceMapping } from './llm/useLLMChat';
 
 const STORAGE_KEY = 'dicomassist-llm-config';
 
@@ -101,41 +101,69 @@ export default function App() {
     };
   }, [imageIds]);
 
-  // Apply SelectionPlan to viewport (W/L + scroll)
+  // Apply SelectionPlan to viewport (W/L + scroll + switch series if needed)
   useEffect(() => {
-    if (!currentPlan || imageIds.length === 0) return;
+    if (!currentPlan || !studyMetadata) return;
 
-    try {
-      const engine = getRenderingEngine('dicomRenderingEngine');
-      if (!engine) return;
-      const viewport = engine.getViewport('CT_STACK') as IStackViewport | undefined;
-      if (!viewport) return;
+    const targetSeries = studyMetadata.series.find(
+      (s) => String(s.seriesNumber) === currentPlan.targetSeries,
+    );
 
-      // Apply window/level
-      const { windowCenter, windowWidth } = currentPlan;
-      viewport.setProperties({ voiRange: { lower: windowCenter - windowWidth / 2, upper: windowCenter + windowWidth / 2 } });
+    // If the plan targets a different series, switch the viewport to it
+    if (targetSeries) {
+      const targetImageIds = targetSeries.slices.map((s) => s.imageId);
+      if (targetImageIds.length > 0 && targetImageIds[0] !== imageIds[0]) {
+        setImageIds(targetImageIds);
+        // W/L and scroll will be applied after the viewport reloads with new imageIds
+      }
+    }
 
-      // Scroll to middle of selected range
-      if (studyMetadata) {
-        const series = studyMetadata.series.find(
-          (s) => String(s.seriesNumber) === currentPlan.targetSeries,
-        );
-        if (series) {
+    // Apply W/L and scroll (may run before or after series switch)
+    let attempts = 0;
+    const applyPlan = () => {
+      try {
+        const engine = getRenderingEngine('dicomRenderingEngine');
+        if (!engine) {
+          // Viewport not ready yet — retry
+          if (attempts++ < 5) setTimeout(applyPlan, 200);
+          return;
+        }
+        const viewport = engine.getViewport('CT_STACK') as IStackViewport | undefined;
+        if (!viewport) {
+          if (attempts++ < 5) setTimeout(applyPlan, 200);
+          return;
+        }
+
+        const viewportIds = viewport.getImageIds();
+        if (viewportIds.length === 0) {
+          if (attempts++ < 5) setTimeout(applyPlan, 200);
+          return;
+        }
+
+        const { windowCenter, windowWidth } = currentPlan;
+        viewport.setProperties({ voiRange: { lower: windowCenter - windowWidth / 2, upper: windowCenter + windowWidth / 2 } });
+
+        if (targetSeries) {
           const [rangeStart, rangeEnd] = currentPlan.sliceRange;
           const midInstance = Math.round((rangeStart + rangeEnd) / 2);
-          // Find index of the closest slice to midInstance
-          const sliceIdx = series.slices.findIndex((s) => s.instanceNumber >= midInstance);
-          if (sliceIdx >= 0) {
+          // Find the slice closest to midInstance in the target series
+          const sliceIdx = targetSeries.slices.findIndex((s) => s.instanceNumber >= midInstance);
+          if (sliceIdx >= 0 && sliceIdx < viewportIds.length) {
             viewport.setImageIdIndex(sliceIdx);
           }
         }
-      }
 
-      viewport.render();
-    } catch {
-      // Viewport may not be ready yet
-    }
-  }, [currentPlan, imageIds, studyMetadata]);
+        viewport.render();
+      } catch {
+        // viewport may not be ready yet — retry
+        if (attempts++ < 5) setTimeout(applyPlan, 200);
+      }
+    };
+
+    // Delay to let series switch + viewport setup take effect
+    const timer = setTimeout(applyPlan, 300);
+    return () => clearTimeout(timer);
+  }, [currentPlan, studyMetadata]); // intentionally omitting imageIds to avoid loop
 
   // Auto-open chat when analysis completes
   useEffect(() => {
@@ -185,8 +213,97 @@ export default function App() {
   }, []);
 
   const handleSpotlightSubmit = useCallback((hint: string) => {
-    startAnalysis(hint);
-  }, [startAnalysis]);
+    // Capture current viewport position as context for slice selection
+    let viewportContext: ViewportContext | undefined;
+    try {
+      const engine = getRenderingEngine('dicomRenderingEngine');
+      const viewport = engine?.getViewport('CT_STACK') as IStackViewport | undefined;
+      if (viewport && studyMetadata) {
+        const sliceIndex = viewport.getCurrentImageIdIndex();
+        // Find which series is currently displayed
+        const currentIds = viewport.getImageIds();
+        const currentSeries = studyMetadata.series.find((s) =>
+          s.slices.length === currentIds.length && s.slices[0]?.imageId === currentIds[0],
+        ) ?? studyMetadata.series.find((s) =>
+          s.slices.some((sl) => sl.imageId === currentIds[0]),
+        );
+        if (currentSeries && sliceIndex >= 0 && sliceIndex < currentSeries.slices.length) {
+          const slice = currentSeries.slices[sliceIndex];
+          viewportContext = {
+            currentInstanceNumber: slice.instanceNumber,
+            currentZPosition: slice.imagePositionPatient[2],
+            seriesNumber: String(currentSeries.seriesNumber),
+            totalSlicesInSeries: currentSeries.slices.length,
+          };
+          console.log('[DICOMassist] Viewport context:', viewportContext);
+        }
+      }
+    } catch { /* viewport may not be ready */ }
+
+    startAnalysis(hint, viewportContext);
+  }, [startAnalysis, studyMetadata]);
+
+  const handleNavigateToSlice = useCallback((mapping: SliceMapping) => {
+    try {
+      const engine = getRenderingEngine('dicomRenderingEngine');
+      if (!engine) return;
+
+      // Try CT_STACK first (native stack mode), fall back to other viewport types
+      let viewport = engine.getViewport('CT_STACK') as IStackViewport | undefined;
+      if (!viewport) {
+        viewport = engine.getViewport('CT_SINGLE_VOL') as IStackViewport | undefined;
+      }
+      if (!viewport) return;
+
+      const viewportIds = viewport.getImageIds();
+
+      // Strategy 1: Find by instance number in the target series metadata (most reliable)
+      if (studyMetadata && currentPlan) {
+        const targetSeries = studyMetadata.series.find(
+          (s) => String(s.seriesNumber) === currentPlan.targetSeries,
+        );
+        if (targetSeries) {
+          const sliceIdx = targetSeries.slices.findIndex(
+            (s) => s.instanceNumber === mapping.instanceNumber,
+          );
+          if (sliceIdx >= 0 && sliceIdx < viewportIds.length) {
+            console.log(`[Navigate] Instance #${mapping.instanceNumber} → series index ${sliceIdx}`);
+            viewport.setImageIdIndex(sliceIdx);
+            viewport.render();
+            return;
+          }
+        }
+      }
+
+      // Strategy 2: Direct imageId match
+      const exactIdx = viewportIds.indexOf(mapping.imageId);
+      if (exactIdx >= 0) {
+        console.log(`[Navigate] Exact imageId match at index ${exactIdx}`);
+        viewport.setImageIdIndex(exactIdx);
+        viewport.render();
+        return;
+      }
+
+      // Strategy 3: Partial imageId match (Cornerstone may add suffixes like &frame=0)
+      const partialIdx = viewportIds.findIndex(
+        (id) => id.includes(mapping.imageId) || mapping.imageId.includes(id),
+      );
+      if (partialIdx >= 0) {
+        console.log(`[Navigate] Partial imageId match at index ${partialIdx}`);
+        viewport.setImageIdIndex(partialIdx);
+        viewport.render();
+        return;
+      }
+
+      console.warn(`[Navigate] Failed to find slice for instance #${mapping.instanceNumber}`, {
+        mappingImageId: mapping.imageId,
+        viewportIdCount: viewportIds.length,
+        viewportIdSample: viewportIds.slice(0, 3),
+      });
+    } catch {
+      // viewport may not be ready
+    }
+  }, [studyMetadata, currentPlan]);
 
   // Show chat or metadata panel (mutual exclusion)
   const handleToggleChat = useCallback(() => {
@@ -267,6 +384,7 @@ export default function App() {
             onSendFollowUp={sendFollowUp}
             onClear={clearChat}
             onClose={() => setShowChat(false)}
+            onNavigateToSlice={handleNavigateToSlice}
           />
         )}
       </div>

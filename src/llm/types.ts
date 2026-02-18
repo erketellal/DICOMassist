@@ -34,13 +34,21 @@ export interface ProviderConfig {
   ollamaUrl?: string;        // Ollama base URL override
 }
 
+export interface ViewportContext {
+  currentInstanceNumber: number;
+  currentZPosition: number;
+  seriesNumber: string;
+  totalSlicesInSeries: number;
+}
+
 export interface LLMService {
-  getSelectionPlan(metadata: StudyMetadata, clinicalHint: string): Promise<SelectionPlan>;
+  getSelectionPlan(metadata: StudyMetadata, clinicalHint: string, viewportContext?: ViewportContext): Promise<SelectionPlan>;
   analyzeSlices(
     images: Blob[],
     metadata: StudyMetadata,
     clinicalHint: string,
     plan: SelectionPlan,
+    sliceLabels: string[],
   ): Promise<string>;
   sendFollowUp(
     conversationHistory: ChatMessage[],

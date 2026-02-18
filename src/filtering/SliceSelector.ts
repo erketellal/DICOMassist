@@ -75,6 +75,7 @@ function applyStrategy(
 
   // Hard cap at MAX_SLICES — re-sample uniformly if over
   if (selected.length > MAX_SLICES) {
+    console.warn(`[SliceSelector] Hard cap: LLM selected ${selected.length} slices, resampling to ${MAX_SLICES}. Consider narrowing the slice range.`);
     const resampled: typeof selected = [];
     for (let i = 0; i < MAX_SLICES; i++) {
       const idx = Math.round((i * (selected.length - 1)) / (MAX_SLICES - 1));
