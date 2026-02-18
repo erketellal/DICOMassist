@@ -1,4 +1,4 @@
-# CLAUDE.md — DICOM LLM Viewer
+# CLAUDE.md — DICOMassist
 
 ## Project Overview
 
@@ -12,7 +12,7 @@ This is a portfolio project. Public GitHub repo + demo video. Goal: showcase cli
 - **Viewer**: Cornerstone3D v4 (`@cornerstonejs/core@^4`, `@cornerstonejs/tools@^4`, `@cornerstonejs/dicom-image-loader@^4`)
 - **Styling**: Tailwind CSS
 - **Icons**: lucide-react
-- **LLM**: Abstracted service layer (Claude API as default, swappable to any provider)
+- **LLM**: Abstracted service layer (Claude API + Ollama, provider-agnostic interface)
 - **LLM API access**: Client-side calls with user-provided API key (runtime input, not bundled)
 - **Data**: Local DICOM files only (drag-and-drop), no backend
 
@@ -45,35 +45,39 @@ export default defineConfig({
 ## Project Structure
 
 ```
-dicom-llm-viewer/
+DICOMassist/
 ├── src/
 │   ├── viewer/              # Cornerstone3D setup, viewports, toolbar
 │   │   ├── CornerstoneInit.ts       # One-time init of core + tools + imageLoader
 │   │   ├── ViewportGrid.tsx          # Viewport layout (stack + MPR)
 │   │   ├── Toolbar.tsx               # Tool buttons (W/L, Zoom, Pan, Scroll, Length, etc.)
-│   │   └── DicomDropZone.tsx         # Drag-and-drop file loading
+│   │   ├── DicomDropZone.tsx         # Drag-and-drop file loading
+│   │   └── LoadingOverlay.tsx        # Prefetch progress indicator
 │   ├── dicom/               # Metadata extraction and parsing
-│   │   ├── MetadataExtractor.ts      # Extract relevant DICOM tags from loaded files
-│   │   ├── SeriesOrganizer.ts        # Group files by series, sort by instance number
+│   │   ├── MetadataExtractor.ts      # Extract DICOM tags, group by series, compute fields
+│   │   ├── orientationUtils.ts       # Anatomical plane detection from direction cosines
 │   │   └── types.ts                  # DICOM metadata type definitions
 │   ├── filtering/           # Slice selection logic
 │   │   ├── SliceSelector.ts          # Apply LLM selection plan to actual slices
 │   │   ├── SliceExporter.ts          # Convert selected slices to JPEG for LLM
-│   │   └── types.ts                  # SelectionPlan, SliceRange types
+│   │   └── types.ts                  # SelectedSlice type
 │   ├── llm/                 # LLM integration (provider-agnostic)
-│   │   ├── LLMService.ts            # Abstract interface
-│   │   ├── ClaudeService.ts          # Claude API implementation
+│   │   ├── LLMServiceFactory.ts      # Claude + Ollama service implementations
 │   │   ├── PromptBuilder.ts          # Constructs prompts from metadata + hint
-│   │   └── types.ts                  # LLMService interface, request/response types
+│   │   ├── useLLMChat.ts             # React hook: pipeline orchestration + state
+│   │   └── types.ts                  # LLMService interface, SelectionPlan, ChatMessage
 │   ├── ui/                  # App-level UI components
 │   │   ├── SpotlightPrompt.tsx       # Cmd+K / Ctrl+K overlay prompt input
 │   │   ├── ChatSidebar.tsx           # Collapsible sidebar with chat history
-│   │   └── MetadataPanel.tsx         # Shows extracted DICOM metadata summary
+│   │   ├── PipelineView.tsx          # Pipeline step visualization
+│   │   ├── AssistantMessage.tsx      # Formatted LLM response with interactive slice refs
+│   │   ├── MetadataPanel.tsx         # Shows extracted DICOM metadata summary
+│   │   └── SettingsPanel.tsx         # LLM provider configuration (Claude/Ollama)
+│   ├── utils/
+│   │   └── logger.ts                 # Dev-gated console logging
 │   ├── App.tsx
 │   └── main.tsx
-├── public/
-├── data/                    # Sample metadata JSONs (not DICOM files - too large for git)
-├── docs/                    # Architecture diagrams, screenshots for README
+├── screenshots/             # Screenshots for README
 ├── CLAUDE.md
 ├── README.md
 └── package.json
@@ -280,7 +284,7 @@ Image Orientation Patient (0020,0037) is MORE reliable than Series Description f
 
 ### Type Definitions
 ```ts
-// --- DICOM Metadata Types ---
+// --- DICOM Metadata Types (src/dicom/types.ts) ---
 
 interface SliceMetadata {
   instanceNumber: number;
@@ -301,6 +305,10 @@ interface SeriesMetadata {
   windowCenter?: number;
   windowWidth?: number;
   anatomicalPlane: 'axial' | 'coronal' | 'sagittal' | 'oblique';
+  zMin: number;                   // Computed: min z-position across slices
+  zMax: number;                   // Computed: max z-position
+  zCoverageInMm: number;          // Computed: zMax - zMin
+  instanceNumberRange: [number, number]; // Computed: [min, max] instance numbers
   slices: SliceMetadata[];
 }
 
@@ -312,10 +320,11 @@ interface StudyMetadata {
   patientSex?: string;
   studyDate?: string;
   institutionName?: string;
+  primarySeriesUID: string;       // UID of the auto-selected primary series
   series: SeriesMetadata[];
 }
 
-// --- LLM Types ---
+// --- LLM Types (src/llm/types.ts) ---
 
 interface SelectionPlan {
   targetSeries: string;           // Series Number as string, e.g., "3" (NOT Series UID)
@@ -333,29 +342,59 @@ interface SelectionPlan {
 //   'all'       — take every slice in the range (use when range is already ≤20 slices)
 // Hard guardrail: if result exceeds 20 slices after sampling, re-sample uniformly to 20.
 
-interface ClinicalAnalysis {
-  summary: string;
-  findings: string[];
-  limitations: string;
-  suggestedFollowUp?: string;
+interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: number;
+}
+
+type ProviderType = 'claude' | 'ollama';
+
+interface ProviderConfig {
+  provider: ProviderType;
+  apiKey?: string;                // Claude only
+  ollamaTextModel?: string;      // Ollama model for Call 1 (text-only planning)
+  ollamaVisionModel?: string;    // Ollama model for Call 2 (multimodal analysis)
+  ollamaUrl?: string;            // Ollama base URL override
+}
+
+interface ViewportContext {
+  currentInstanceNumber: number;
+  currentZPosition: number;
+  seriesNumber: string;
+  totalSlicesInSeries: number;
 }
 
 interface LLMService {
-  getSelectionPlan(metadata: StudyMetadata, clinicalHint: string): Promise<SelectionPlan>;
-  analyzeSlices(images: Blob[], metadata: StudyMetadata, clinicalHint: string, plan: SelectionPlan): Promise<ClinicalAnalysis>;
+  getSelectionPlan(metadata: StudyMetadata, clinicalHint: string, viewportContext?: ViewportContext): Promise<SelectionPlan>;
+  analyzeSlices(images: Blob[], metadata: StudyMetadata, clinicalHint: string, plan: SelectionPlan, sliceLabels: string[]): Promise<string>;
+  sendFollowUp(conversationHistory: ChatMessage[], metadata: StudyMetadata): Promise<string>;
 }
 ```
 
 ### Two-Call Architecture
 **Call 1 — Selection Planning (text-only)**
-- Send: structured metadata JSON + clinical hint
+- Send: structured metadata JSON + clinical hint + viewport context (current slice position)
 - Receive: SelectionPlan JSON
 - Purpose: LLM uses clinical reasoning to pick the right series, slice range, window/level
 
 **Call 2 — Image Analysis (multimodal)**
-- Send: 10-20 JPEG images + metadata context + clinical hint + selection reasoning
-- Receive: clinical analysis text
+- Send: 10-20 JPEG images + metadata context + clinical hint + selection reasoning + slice labels
+- Receive: clinical analysis text (plain text, not structured JSON — rendered with markdown formatting)
 - Purpose: actual visual analysis of selected slices
+
+**Follow-up Messages (text-only)**
+- Send: full conversation history + metadata context
+- Receive: text response
+- Purpose: "elaborate on finding #2", differential diagnosis, etc.
+
+### LLM Providers
+Both providers implement the same `LLMService` interface in `LLMServiceFactory.ts`:
+
+**Claude API** — Uses `claude-sonnet-4-20250514` for both calls. API key entered at runtime, stored in localStorage.
+
+**Ollama** — Supports split text/vision models (e.g., `alibayram/medgemma:4b` for Call 1, `llava:7b` for Call 2). Runs locally, no API key needed. Requires `OLLAMA_ORIGINS=*` for CORS.
 
 ### Image Preparation for LLM
 - Convert selected DICOM slices to JPEG using canvas
@@ -436,43 +475,45 @@ Spotlight Prompt (Cmd+K / Ctrl+K overlay, centered):
 ## Build Phases
 
 ### Phase 1: Viewer Foundation
-- [ ] Project setup (React + Vite + Cornerstone3D + Tailwind)
-- [ ] Cornerstone3D initialization
-- [ ] Drag-and-drop DICOM file loading with progress bar
-- [ ] Stack viewport with axial slice scrolling
-- [ ] Toolbar (W/L, Zoom, Pan, Scroll, Length, Reset)
-- [ ] Status bar (series info, slice number, window values)
+- [x] Project setup (React + Vite + Cornerstone3D + Tailwind)
+- [x] Cornerstone3D initialization
+- [x] Drag-and-drop DICOM file loading with progress bar
+- [x] Stack viewport with axial slice scrolling
+- [x] Toolbar (W/L, Zoom, Pan, Scroll, Length, Reset)
+- [x] Status bar (series info, slice number, window values)
 
 ### Phase 2: Metadata Extraction
-- [ ] Extract study-level metadata
-- [ ] Extract series-level metadata, group files by series
-- [ ] Extract per-slice spatial data
-- [ ] Build structured metadata summary object
-- [ ] Metadata panel UI
+- [x] Extract study-level metadata
+- [x] Extract series-level metadata, group files by series
+- [x] Extract per-slice spatial data
+- [x] Build structured metadata summary object
+- [x] Metadata panel UI
 
 ### Phase 3: LLM Integration
-- [ ] LLMService interface
-- [ ] ClaudeService: Call 1 (text-only selection plan)
-- [ ] PromptBuilder for metadata + hint
-- [ ] SliceSelector: apply SelectionPlan to image data
-- [ ] SliceExporter: DICOM → windowed JPEG conversion
-- [ ] ClaudeService: Call 2 (multimodal analysis)
-- [ ] API key config: runtime input UI (stored in localStorage, NOT bundled in build)
+- [x] LLMService interface
+- [x] Claude + Ollama: Call 1 (text-only selection plan)
+- [x] PromptBuilder for metadata + hint
+- [x] SliceSelector: apply SelectionPlan to image data
+- [x] SliceExporter: DICOM → windowed JPEG conversion
+- [x] Claude + Ollama: Call 2 (multimodal analysis)
+- [x] Provider config: runtime settings UI (Claude API key + Ollama model config)
 
 ### Phase 4: UI Integration
-- [ ] Spotlight prompt component (Cmd+K)
-- [ ] Chat sidebar component
-- [ ] Wire up full flow: prompt → Call 1 → viewer adjust → Call 2 → chat
-- [ ] Viewer auto-scrolls to selected range
-- [ ] Viewer auto-applies window/level from plan
-- [ ] Loading states and error handling
+- [x] Spotlight prompt component (Cmd+K)
+- [x] Chat sidebar component with pipeline visualization
+- [x] Wire up full flow: prompt → Call 1 → viewer adjust → Call 2 → chat
+- [x] Viewer auto-scrolls to selected range
+- [x] Viewer auto-applies window/level from plan
+- [x] Loading states and error handling
+- [x] Interactive slice references in LLM responses
+- [x] Follow-up conversation support
 
 ### Phase 5: Polish
-- [ ] README with architecture diagram, screenshots, setup instructions
-- [ ] Sample DICOM data download instructions
+- [x] README with architecture diagram, screenshots, setup instructions
+- [x] Sample DICOM data download instructions
 - [ ] Error handling edge cases
-- [ ] Keyboard shortcuts documentation
-- [ ] "Not for clinical use" disclaimer in UI
+- [x] Keyboard shortcuts documentation
+- [x] "Not for clinical use" disclaimer in UI
 
 ## Sample DICOM Data
 
@@ -512,3 +553,6 @@ Include download instructions in README. Do NOT commit DICOM files to git.
 10. **Volume viewport type**: Use `Enums.ViewportType.ORTHOGRAPHIC` for MPR viewports, not `VOLUME`.
 11. **v4 camera FOV**: v4 removed the 10% padding around images. Use `useLegacyCameraFOV: true` in init if the edge-to-edge display looks wrong.
 12. **Node.js 20+ required**: Cornerstone3D v4 requires Node.js 20 or later.
+13. **Ollama CORS**: Ollama must be started with `OLLAMA_ORIGINS=*` to allow browser requests. Without this, fetch calls to `localhost:11434` fail silently.
+14. **Ollama timeouts**: Large vision models (e.g., llava:34b) can take 60-120+ seconds. The app uses a 120s timeout for Ollama calls.
+15. **Ollama vision model limitations**: Not all Ollama models support multimodal input. Only models explicitly listed as "vision" (llava, bakllava, etc.) work for Call 2. Text-only models will fail on the image analysis call.

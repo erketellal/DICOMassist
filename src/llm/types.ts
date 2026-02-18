@@ -10,13 +10,6 @@ export interface SelectionPlan {
   reasoning: string;
 }
 
-export interface ClinicalAnalysis {
-  summary: string;
-  findings: string[];
-  limitations: string;
-  suggestedFollowUp?: string;
-}
-
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';

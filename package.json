@@ -1,7 +1,8 @@
 {
-  "name": "dicom-llm-viewer",
+  "name": "dicomassist",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "DICOM viewer with LLM-powered slice selection and clinical analysis",
   "type": "module",
   "scripts": {
     "dev": "vite",

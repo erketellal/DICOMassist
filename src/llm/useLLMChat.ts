@@ -4,6 +4,7 @@ import type { SelectionPlan, ChatMessage, ProviderConfig, ViewportContext } from
 import { createLLMService } from './LLMServiceFactory';
 import { selectSlices } from '../filtering/SliceSelector';
 import { exportSlicesToJpeg } from '../filtering/SliceExporter';
+import { logger } from '../utils/logger';
 
 export type ChatStatus = 'idle' | 'planning' | 'exporting' | 'analyzing' | 'following-up' | 'error';
 
@@ -57,13 +58,6 @@ function makeId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
-const INITIAL_STEPS: PipelineStep[] = [
-  { id: 'plan', label: 'Selection planning', status: 'pending' },
-  { id: 'select', label: 'Selecting slices', status: 'pending' },
-  { id: 'export', label: 'Exporting images', status: 'pending' },
-  { id: 'analyze', label: 'Analyzing images', status: 'pending' },
-];
-
 function updateStep(
   steps: PipelineStep[],
   id: string,
@@ -95,7 +89,7 @@ function fixSelectionPlan(plan: SelectionPlan, metadata: StudyMetadata): Selecti
     const halfRange = Math.round(MIN_SLICES_IN_RANGE / 2);
     rangeStart = Math.max(minInst, center - halfRange);
     rangeEnd = Math.min(maxInst, center + halfRange);
-    console.warn(`[PlanFix] Range too narrow (${plan.sliceRange[0]}–${plan.sliceRange[1]}), expanded to ${rangeStart}–${rangeEnd}`);
+    logger.warn(`[PlanFix] Range too narrow (${plan.sliceRange[0]}–${plan.sliceRange[1]}), expanded to ${rangeStart}–${rangeEnd}`);
   }
 
   // Fix: "all" on a large range → switch to uniform
@@ -104,13 +98,13 @@ function fixSelectionPlan(plan: SelectionPlan, metadata: StudyMetadata): Selecti
   if (samplingStrategy === 'all' && newRangeSize > 20) {
     samplingStrategy = 'uniform';
     samplingParam = 15;
-    console.warn(`[PlanFix] "all" on ${newRangeSize} slices → switched to uniform(15)`);
+    logger.warn(`[PlanFix] "all" on ${newRangeSize} slices → switched to uniform(15)`);
   }
 
   // Fix: uniform without param → default to 15
   if (samplingStrategy === 'uniform' && (samplingParam == null || samplingParam < 1)) {
     samplingParam = 15;
-    console.warn('[PlanFix] Missing samplingParam for uniform, defaulting to 15');
+    logger.warn('[PlanFix] Missing samplingParam for uniform, defaulting to 15');
   }
 
   return {
@@ -167,9 +161,9 @@ export function useLLMChat(
         steps: updateStep(p.steps, 'plan', { status: 'active', detail: 'Sending metadata to LLM...' }),
       }));
 
-      console.group('[DICOMassist] Analysis Pipeline');
-      console.log('📋 Clinical hint:', hint);
-      console.log('📊 Study metadata:', {
+      logger.group('[DICOMassist] Analysis Pipeline');
+      logger.log('📋 Clinical hint:', hint);
+      logger.log('📊 Study metadata:', {
         study: metadata.studyDescription,
         modality: metadata.modality,
         series: metadata.series.map((s) => ({
@@ -182,12 +176,12 @@ export function useLLMChat(
 
       const rawPlan = await service.getSelectionPlan(metadata, hint, viewportContext);
       const t1 = performance.now();
-      if (abortRef.current) { console.groupEnd(); return; }
+      if (abortRef.current) { logger.groupEnd(); return; }
 
-      console.log('🎯 Call 1 — Raw plan:', rawPlan);
+      logger.log('🎯 Call 1 — Raw plan:', rawPlan);
       const plan = fixSelectionPlan(rawPlan, metadata);
       if (plan.sliceRange[0] !== rawPlan.sliceRange[0] || plan.sliceRange[1] !== rawPlan.sliceRange[1]) {
-        console.log('🔧 Plan fixed:', `[${rawPlan.sliceRange}] → [${plan.sliceRange}]`);
+        logger.log('🔧 Plan fixed:', `[${rawPlan.sliceRange}] → [${plan.sliceRange}]`);
       }
 
       setCurrentPlan(plan);
@@ -207,13 +201,13 @@ export function useLLMChat(
         steps: updateStep(p.steps, 'select', { status: 'active', detail: `Applying ${plan.samplingStrategy} strategy...` }),
       }));
       const selectedSlices = selectSlices(metadata, plan);
-      console.log(`🔍 Selected ${selectedSlices.length} slices:`, selectedSlices.map((s) => ({
+      logger.log(`🔍 Selected ${selectedSlices.length} slices:`, selectedSlices.map((s) => ({
         instance: s.instanceNumber,
         z: s.zPosition.toFixed(1),
       })));
 
       if (selectedSlices.length === 0) {
-        console.groupEnd();
+        logger.groupEnd();
         setPipeline((p) => p && ({
           ...p,
           steps: updateStep(p.steps, 'select', { status: 'error', detail: 'No slices matched' }),
@@ -249,12 +243,12 @@ export function useLLMChat(
 
       const exported = await exportSlicesToJpeg(selectedSlices, plan.windowCenter, plan.windowWidth);
       const t3 = performance.now();
-      if (abortRef.current) { console.groupEnd(); return; }
+      if (abortRef.current) { logger.groupEnd(); return; }
 
       const sizes = exported.map((e) => `${(e.blob.size / 1024).toFixed(0)}KB`);
       const totalSize = exported.reduce((sum, e) => sum + e.blob.size, 0);
-      console.log(`🖼️ Exported ${exported.length} JPEG images (sizes: ${sizes.join(', ')})`);
-      console.log('📋 Slice mappings:', mappings.map((m) => `${m.label} (z=${m.zPosition.toFixed(1)})`));
+      logger.log(`🖼️ Exported ${exported.length} JPEG images (sizes: ${sizes.join(', ')})`);
+      logger.log('📋 Slice mappings:', mappings.map((m) => `${m.label} (z=${m.zPosition.toFixed(1)})`));
 
       setPipeline((p) => p && ({
         ...p,
@@ -276,13 +270,13 @@ export function useLLMChat(
 
       const blobs = exported.map((e) => e.blob);
       const sliceLabels = mappings.map((m) => m.label);
-      console.log(`📡 Call 2 — Sending ${blobs.length} images to LLM (${sliceLabels.join(', ')})...`);
+      logger.log(`📡 Call 2 — Sending ${blobs.length} images to LLM (${sliceLabels.join(', ')})...`);
       const analysisText = await service.analyzeSlices(blobs, metadata, hint, plan, sliceLabels);
       const t5 = performance.now();
-      if (abortRef.current) { console.groupEnd(); return; }
+      if (abortRef.current) { logger.groupEnd(); return; }
 
-      console.log('✅ Call 2 — Analysis response:', analysisText.slice(0, 200) + '...');
-      console.groupEnd();
+      logger.log('✅ Call 2 — Analysis response:', analysisText.slice(0, 200) + '...');
+      logger.groupEnd();
 
       setPipeline((p) => p && ({
         ...p,
@@ -302,7 +296,7 @@ export function useLLMChat(
       setMessages((prev) => [...prev, assistantMsg]);
       setStatus('idle');
     } catch (err) {
-      console.groupEnd();
+      logger.groupEnd();
       if (abortRef.current) return;
       const msg = err instanceof Error ? err.message : 'An unexpected error occurred';
       setError(msg);

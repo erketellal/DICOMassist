@@ -14,6 +14,7 @@ import type { AnatomicalPlane } from './dicom/orientationUtils';
 import type { StudyMetadata } from './dicom/types';
 import type { ProviderConfig, ViewportContext } from './llm/types';
 import { useLLMChat, type SliceMapping } from './llm/useLLMChat';
+import { logger } from './utils/logger';
 
 const STORAGE_KEY = 'dicomassist-llm-config';
 
@@ -235,7 +236,7 @@ export default function App() {
             seriesNumber: String(currentSeries.seriesNumber),
             totalSlicesInSeries: currentSeries.slices.length,
           };
-          console.log('[DICOMassist] Viewport context:', viewportContext);
+          logger.log('[DICOMassist] Viewport context:', viewportContext);
         }
       }
     } catch { /* viewport may not be ready */ }
@@ -267,7 +268,7 @@ export default function App() {
             (s) => s.instanceNumber === mapping.instanceNumber,
           );
           if (sliceIdx >= 0 && sliceIdx < viewportIds.length) {
-            console.log(`[Navigate] Instance #${mapping.instanceNumber} → series index ${sliceIdx}`);
+            logger.log(`[Navigate] Instance #${mapping.instanceNumber} → series index ${sliceIdx}`);
             viewport.setImageIdIndex(sliceIdx);
             viewport.render();
             return;
@@ -278,7 +279,7 @@ export default function App() {
       // Strategy 2: Direct imageId match
       const exactIdx = viewportIds.indexOf(mapping.imageId);
       if (exactIdx >= 0) {
-        console.log(`[Navigate] Exact imageId match at index ${exactIdx}`);
+        logger.log(`[Navigate] Exact imageId match at index ${exactIdx}`);
         viewport.setImageIdIndex(exactIdx);
         viewport.render();
         return;
@@ -289,13 +290,13 @@ export default function App() {
         (id) => id.includes(mapping.imageId) || mapping.imageId.includes(id),
       );
       if (partialIdx >= 0) {
-        console.log(`[Navigate] Partial imageId match at index ${partialIdx}`);
+        logger.log(`[Navigate] Partial imageId match at index ${partialIdx}`);
         viewport.setImageIdIndex(partialIdx);
         viewport.render();
         return;
       }
 
-      console.warn(`[Navigate] Failed to find slice for instance #${mapping.instanceNumber}`, {
+      logger.warn(`[Navigate] Failed to find slice for instance #${mapping.instanceNumber}`, {
         mappingImageId: mapping.imageId,
         viewportIdCount: viewportIds.length,
         viewportIdSample: viewportIds.slice(0, 3),
