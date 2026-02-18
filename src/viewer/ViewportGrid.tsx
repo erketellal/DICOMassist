@@ -151,6 +151,50 @@ export default function ViewportGrid({
     return () => observer.disconnect();
   }, [layout]);
 
+  // Prevent browser zoom on trackpad pinch and route to Cornerstone zoom
+  useEffect(() => {
+    const elements = [singleRef.current, axialRef.current, sagittalRef.current, coronalRef.current].filter(Boolean) as HTMLDivElement[];
+    if (elements.length === 0) return;
+
+    function handleWheel(e: WheelEvent) {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+
+      const engine = renderingEngineRef.current;
+      if (!engine) return;
+
+      // Find the viewport whose element matches the event target
+      for (const vp of engine.getViewports()) {
+        if ((e.currentTarget as Node).contains(e.target as Node)) {
+          const factor = 1 - e.deltaY * 0.01;
+          const current = vp.getZoom();
+          vp.setZoom(current * factor);
+          vp.render();
+          break;
+        }
+      }
+    }
+
+    // Safari fires gesturestart/gesturechange for pinch — prevent those too
+    function preventGesture(e: Event) {
+      e.preventDefault();
+    }
+
+    for (const el of elements) {
+      el.addEventListener('wheel', handleWheel, { passive: false });
+      el.addEventListener('gesturestart', preventGesture);
+      el.addEventListener('gesturechange', preventGesture);
+    }
+
+    return () => {
+      for (const el of elements) {
+        el.removeEventListener('wheel', handleWheel);
+        el.removeEventListener('gesturestart', preventGesture);
+        el.removeEventListener('gesturechange', preventGesture);
+      }
+    };
+  }, [layout]);
+
   function cleanup() {
     for (const fn of eventCleanupsRef.current) fn();
     eventCleanupsRef.current = [];
@@ -372,12 +416,18 @@ export default function ViewportGrid({
     // Always keep Zoom on right-click and Pan on middle-click
     if (toolName !== ZoomTool.toolName) {
       toolGroup.setToolActive(ZoomTool.toolName, {
-        bindings: [{ mouseButton: csToolsEnums.MouseBindings.Secondary }],
+        bindings: [
+          { mouseButton: csToolsEnums.MouseBindings.Secondary },
+          { numTouchPoints: 2 },  // pinch-to-zoom on trackpad/touch
+        ],
       });
     }
     if (toolName !== PanTool.toolName) {
       toolGroup.setToolActive(PanTool.toolName, {
-        bindings: [{ mouseButton: csToolsEnums.MouseBindings.Auxiliary }],
+        bindings: [
+          { mouseButton: csToolsEnums.MouseBindings.Auxiliary },
+          { numTouchPoints: 3 },  // three-finger drag to pan
+        ],
       });
     }
   }, []);

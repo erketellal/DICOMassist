@@ -5,7 +5,9 @@ import DicomDropZone, { type LoadResult } from './viewer/DicomDropZone';
 import ViewportGrid, { type ActiveToolName, type LayoutType } from './viewer/ViewportGrid';
 import Toolbar from './viewer/Toolbar';
 import LoadingOverlay from './viewer/LoadingOverlay';
+import MetadataPanel from './ui/MetadataPanel';
 import type { AnatomicalPlane } from './dicom/orientationUtils';
+import type { StudyMetadata } from './dicom/types';
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -15,6 +17,8 @@ export default function App() {
   const [activeTool, setActiveTool] = useState<ActiveToolName>('WindowLevel');
   const [layout, setLayout] = useState<LayoutType>('stack');
   const [prefetchProgress, setPrefetchProgress] = useState({ loaded: 0, total: 0 });
+  const [studyMetadata, setStudyMetadata] = useState<StudyMetadata | null>(null);
+  const [showMetadata, setShowMetadata] = useState(true);
   const resetRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -25,6 +29,7 @@ export default function App() {
     setImageIds(result.imageIds);
     setPrimaryAxis(result.primaryAxis);
     setOrientation(result.primaryAxis); // default to primary axis
+    setStudyMetadata(result.studyMetadata);
   }, []);
 
   // Prefetch all images after they're set
@@ -87,22 +92,32 @@ export default function App() {
         onOrientationChange={setOrientation}
         primaryAxis={primaryAxis}
         onReset={handleReset}
+        showMetadata={showMetadata}
+        onToggleMetadata={studyMetadata ? () => setShowMetadata((v) => !v) : undefined}
       />
-      <div className="flex-1 min-h-0 relative overflow-hidden">
-        <div className="absolute inset-0">
-          <ViewportGrid
-            imageIds={imageIds}
-            activeTool={activeTool}
-            layout={layout}
-            orientation={orientation}
-            primaryAxis={primaryAxis}
-            onResetRef={resetRef}
+      <div className="flex-1 min-h-0 flex overflow-hidden">
+        <div className="flex-1 min-w-0 relative overflow-hidden">
+          <div className="absolute inset-0">
+            <ViewportGrid
+              imageIds={imageIds}
+              activeTool={activeTool}
+              layout={layout}
+              orientation={orientation}
+              primaryAxis={primaryAxis}
+              onResetRef={resetRef}
+            />
+          </div>
+          <LoadingOverlay
+            loaded={prefetchProgress.loaded}
+            total={prefetchProgress.total}
           />
         </div>
-        <LoadingOverlay
-          loaded={prefetchProgress.loaded}
-          total={prefetchProgress.total}
-        />
+        {showMetadata && studyMetadata && (
+          <MetadataPanel
+            metadata={studyMetadata}
+            onClose={() => setShowMetadata(false)}
+          />
+        )}
       </div>
     </div>
   );

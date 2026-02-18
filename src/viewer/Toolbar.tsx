@@ -7,6 +7,7 @@ import {
   LayoutGrid,
   Square,
   Grid2x2,
+  Info,
 } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import type { ActiveToolName, LayoutType } from './ViewportGrid';
@@ -21,6 +22,8 @@ interface ToolbarProps {
   onOrientationChange: (orientation: AnatomicalPlane) => void;
   primaryAxis: AnatomicalPlane;
   onReset: () => void;
+  showMetadata?: boolean;
+  onToggleMetadata?: () => void;
 }
 
 const tools: { name: ActiveToolName; label: string; icon: React.ReactNode }[] = [
@@ -47,6 +50,7 @@ export default function Toolbar({
   orientation, onOrientationChange,
   primaryAxis,
   onReset,
+  showMetadata, onToggleMetadata,
 }: ToolbarProps) {
   const [layoutOpen, setLayoutOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -152,6 +156,25 @@ export default function Toolbar({
           </div>
         )}
       </div>
+
+      {/* Spacer to push Info toggle to the right */}
+      <div className="flex-1" />
+
+      {/* Study Info toggle */}
+      {onToggleMetadata && (
+        <button
+          onClick={onToggleMetadata}
+          title="Study Info"
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-sm transition-colors ${
+            showMetadata
+              ? 'bg-blue-600 text-white'
+              : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'
+          }`}
+        >
+          <Info className="w-5 h-5" />
+          <span className="hidden sm:inline">Info</span>
+        </button>
+      )}
     </div>
   );
 }

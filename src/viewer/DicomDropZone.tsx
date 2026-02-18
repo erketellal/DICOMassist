@@ -2,11 +2,14 @@ import { useCallback, useState } from 'react';
 import { Upload } from 'lucide-react';
 import cornerstoneDICOMImageLoader from '@cornerstonejs/dicom-image-loader';
 import dicomParser from 'dicom-parser';
-import { detectPlaneFromOrientation, type AnatomicalPlane } from '../dicom/orientationUtils';
+import type { AnatomicalPlane } from '../dicom/orientationUtils';
+import { extractFileMetadata, buildStudyMetadata, type RawFileRecord } from '../dicom/MetadataExtractor';
+import type { StudyMetadata } from '../dicom/types';
 
 export interface LoadResult {
   imageIds: string[];
   primaryAxis: AnatomicalPlane;
+  studyMetadata: StudyMetadata;
 }
 
 interface DicomDropZoneProps {
@@ -79,9 +82,8 @@ export default function DicomDropZone({ onFilesLoaded }: DicomDropZoneProps) {
       setLoadingPhase('reading');
       setProgress({ loaded: 0, total: files.length });
 
-      // Parse headers to extract sort keys + detect orientation, then register with fileManager
-      const parsed: { file: File; instanceNumber: number; zPosition: number }[] = [];
-      let primaryAxis: AnatomicalPlane = 'axial';
+      // Parse headers to extract metadata, then register with fileManager
+      const parsed: { file: File; meta: Omit<RawFileRecord, 'imageId'> }[] = [];
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
@@ -90,44 +92,46 @@ export default function DicomDropZone({ onFilesLoaded }: DicomDropZoneProps) {
           const byteArray = new Uint8Array(arrayBuffer);
           const dataSet = dicomParser.parseDicom(byteArray);
 
-          const instanceNumber = dataSet.intString('x00200013') ?? 0;
-
-          // Image Position Patient (0020,0032) — z-component is the 3rd value
-          const ipp = dataSet.string('x00200032');
-          const zPosition = ipp
-            ? parseFloat(ipp.split('\\')[2] ?? '0')
-            : 0;
-
-          // Detect primary axis from first file's Image Orientation Patient
-          if (i === 0) {
-            const iop = dataSet.string('x00200037');
-            primaryAxis = detectPlaneFromOrientation(iop);
-          }
-
-          parsed.push({ file, instanceNumber, zPosition });
+          const meta = extractFileMetadata(dataSet);
+          parsed.push({ file, meta });
         } catch {
-          parsed.push({ file, instanceNumber: 0, zPosition: 0 });
+          parsed.push({
+            file,
+            meta: {
+              instanceNumber: 0,
+              zPosition: 0,
+              imagePositionPatient: [0, 0, 0],
+              imageOrientationPatient: [1, 0, 0, 0, 1, 0],
+              seriesInstanceUID: 'unknown',
+              seriesNumber: 0,
+              seriesDescription: '',
+              modality: 'unknown',
+              studyDescription: '',
+            },
+          });
         }
         setProgress({ loaded: i + 1, total: files.length });
       }
 
       setLoadingPhase('sorting');
 
-      // Sort by z-position (Image Position Patient) — most reliable for spatial ordering.
-      // Fall back to instance number if z-positions are all identical.
-      const allSameZ = parsed.every((p) => p.zPosition === parsed[0]?.zPosition);
-      if (allSameZ) {
-        parsed.sort((a, b) => a.instanceNumber - b.instanceNumber);
-      } else {
-        parsed.sort((a, b) => a.zPosition - b.zPosition);
-      }
+      // Register files with fileManager and assign imageIds (no global sort — per-series sorting happens in buildStudyMetadata)
+      const records: RawFileRecord[] = parsed.map((p) => {
+        const imageId = cornerstoneDICOMImageLoader.wadouri.fileManager.add(p.file);
+        return { ...p.meta, imageId };
+      });
 
-      const imageIds = parsed.map((p) =>
-        cornerstoneDICOMImageLoader.wadouri.fileManager.add(p.file)
+      const studyMetadata = buildStudyMetadata(records);
+
+      // Extract only the primary series imageIds (already sorted per-series by buildStudyMetadata)
+      const primarySeries = studyMetadata.series.find(
+        (s) => s.seriesInstanceUID === studyMetadata.primarySeriesUID
       );
+      const imageIds = primarySeries ? primarySeries.slices.map((s) => s.imageId) : records.map((r) => r.imageId);
+      const primaryAxis: AnatomicalPlane = primarySeries?.anatomicalPlane ?? 'axial';
 
       setLoading(false);
-      onFilesLoaded({ imageIds, primaryAxis });
+      onFilesLoaded({ imageIds, primaryAxis, studyMetadata });
     },
     [onFilesLoaded]
   );
