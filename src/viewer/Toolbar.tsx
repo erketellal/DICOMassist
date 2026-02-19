@@ -11,9 +11,10 @@ import {
   Search,
   MessageSquare,
   Settings,
+  Compass,
 } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
-import type { ActiveToolName, LayoutType } from './ViewportGrid';
+import type { ActiveToolName, LayoutType, OrientationMarkerType } from './ViewportGrid';
 import type { AnatomicalPlane } from '../dicom/orientationUtils';
 
 interface ToolbarProps {
@@ -31,6 +32,8 @@ interface ToolbarProps {
   onToggleChat?: () => void;
   onOpenSpotlight?: () => void;
   onOpenSettings?: () => void;
+  orientationMarkerType?: OrientationMarkerType;
+  onOrientationMarkerTypeChange?: (type: OrientationMarkerType) => void;
 }
 
 const tools: { name: ActiveToolName; label: string; icon: React.ReactNode }[] = [
@@ -43,6 +46,12 @@ const tools: { name: ActiveToolName; label: string; icon: React.ReactNode }[] = 
 const layouts: { name: LayoutType; label: string; icon: React.ReactNode }[] = [
   { name: 'stack', label: 'Stack (1×1)', icon: <Square className="w-4 h-4" /> },
   { name: 'mpr', label: 'MPR (2×2)', icon: <Grid2x2 className="w-4 h-4" /> },
+];
+
+const markerTypes: { name: OrientationMarkerType; label: string }[] = [
+  { name: 'cube', label: 'Annotated Cube' },
+  { name: 'axes', label: 'Axes' },
+  { name: 'custom', label: 'Human Model' },
 ];
 
 const orientations: { name: AnatomicalPlane; label: string; short: string }[] = [
@@ -60,9 +69,12 @@ export default function Toolbar({
   showMetadata, onToggleMetadata,
   showChat, onToggleChat,
   onOpenSpotlight, onOpenSettings,
+  orientationMarkerType = 'cube', onOrientationMarkerTypeChange,
 }: ToolbarProps) {
   const [layoutOpen, setLayoutOpen] = useState(false);
+  const [markerOpen, setMarkerOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const markerDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!layoutOpen) return;
@@ -74,6 +86,17 @@ export default function Toolbar({
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, [layoutOpen]);
+
+  useEffect(() => {
+    if (!markerOpen) return;
+    function handleClick(e: MouseEvent) {
+      if (markerDropdownRef.current && !markerDropdownRef.current.contains(e.target as Node)) {
+        setMarkerOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [markerOpen]);
 
   const btnClass = (active?: boolean) =>
     `flex items-center gap-1.5 px-3 py-1.5 rounded text-sm transition-colors ${
@@ -168,6 +191,39 @@ export default function Toolbar({
           </div>
         )}
       </div>
+
+      {/* Orientation marker type dropdown */}
+      {onOrientationMarkerTypeChange && (
+        <div className="relative" ref={markerDropdownRef}>
+          <button
+            onClick={() => setMarkerOpen(!markerOpen)}
+            title="Orientation marker"
+            className={btnClass()}
+          >
+            <Compass className="w-5 h-5" />
+          </button>
+          {markerOpen && (
+            <div className="absolute top-full left-0 mt-1 bg-neutral-800 border border-neutral-700 rounded-lg shadow-xl py-1 z-50 min-w-[180px]">
+              {markerTypes.map((m) => (
+                <button
+                  key={m.name}
+                  onClick={() => {
+                    onOrientationMarkerTypeChange(m.name);
+                    setMarkerOpen(false);
+                  }}
+                  className={`flex items-center gap-2 w-full px-3 py-2 text-sm text-left transition-colors ${
+                    orientationMarkerType === m.name
+                      ? 'bg-blue-600/20 text-blue-400'
+                      : 'text-neutral-300 hover:bg-neutral-700'
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Spacer */}
       <div className="flex-1" />

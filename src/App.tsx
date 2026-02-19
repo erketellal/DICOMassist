@@ -3,7 +3,7 @@ import { imageLoader, getRenderingEngine } from '@cornerstonejs/core';
 import type { IStackViewport } from '@cornerstonejs/core';
 import { initCornerstone } from './viewer/CornerstoneInit';
 import DicomDropZone, { type LoadResult } from './viewer/DicomDropZone';
-import ViewportGrid, { type ActiveToolName, type LayoutType } from './viewer/ViewportGrid';
+import ViewportGrid, { type ActiveToolName, type LayoutType, type OrientationMarkerType } from './viewer/ViewportGrid';
 import Toolbar from './viewer/Toolbar';
 import LoadingOverlay from './viewer/LoadingOverlay';
 import MetadataPanel from './ui/MetadataPanel';
@@ -37,6 +37,7 @@ export default function App() {
   const [orientation, setOrientation] = useState<AnatomicalPlane>('axial');
   const [activeTool, setActiveTool] = useState<ActiveToolName>('WindowLevel');
   const [layout, setLayout] = useState<LayoutType>('stack');
+  const [orientationMarkerType, setOrientationMarkerType] = useState<OrientationMarkerType>('cube');
   const [prefetchProgress, setPrefetchProgress] = useState({ loaded: 0, total: 0 });
   const [studyMetadata, setStudyMetadata] = useState<StudyMetadata | null>(null);
   const [showMetadata, setShowMetadata] = useState(false);
@@ -351,6 +352,8 @@ export default function App() {
         onToggleChat={handleToggleChat}
         onOpenSpotlight={() => setSpotlightOpen(true)}
         onOpenSettings={() => setSettingsOpen((v) => !v)}
+        orientationMarkerType={orientationMarkerType}
+        onOrientationMarkerTypeChange={setOrientationMarkerType}
       />
       <div className="flex-1 min-h-0 flex overflow-hidden">
         <div className="flex-1 min-w-0 relative overflow-hidden">
@@ -361,6 +364,7 @@ export default function App() {
               layout={layout}
               orientation={orientation}
               primaryAxis={primaryAxis}
+              orientationMarkerType={orientationMarkerType}
               onResetRef={resetRef}
             />
           </div>

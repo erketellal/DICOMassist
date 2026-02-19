@@ -14,6 +14,7 @@ import {
   ZoomTool,
   StackScrollTool,
   LengthTool,
+  OrientationMarkerTool,
   Enums as csToolsEnums,
 } from '@cornerstonejs/tools';
 import type { AnatomicalPlane } from '../dicom/orientationUtils';
@@ -34,6 +35,7 @@ function registerTools() {
   addTool(ZoomTool);
   addTool(StackScrollTool);
   addTool(LengthTool);
+  addTool(OrientationMarkerTool);
   toolsRegistered = true;
 }
 
@@ -45,6 +47,13 @@ const ORIENTATION_MAP: Record<AnatomicalPlane, Enums.OrientationAxis> = {
 
 export type ActiveToolName = 'WindowLevel' | 'Pan' | 'Zoom' | 'Length';
 export type LayoutType = 'stack' | 'mpr';
+export type OrientationMarkerType = 'cube' | 'axes' | 'custom';
+
+const MARKER_TYPE_MAP: Record<OrientationMarkerType, number> = {
+  cube: OrientationMarkerTool.OVERLAY_MARKER_TYPES.ANNOTATED_CUBE,
+  axes: OrientationMarkerTool.OVERLAY_MARKER_TYPES.AXES,
+  custom: OrientationMarkerTool.OVERLAY_MARKER_TYPES.CUSTOM,
+};
 
 interface ViewportInfo {
   current: number;
@@ -59,6 +68,7 @@ interface ViewportGridProps {
   layout: LayoutType;
   orientation: AnatomicalPlane;
   primaryAxis: AnatomicalPlane;
+  orientationMarkerType?: OrientationMarkerType;
   onResetRef?: React.MutableRefObject<(() => void) | null>;
 }
 
@@ -88,7 +98,7 @@ function ViewportOverlay({ label, info }: { label: string; info: ViewportInfo })
 }
 
 export default function ViewportGrid({
-  imageIds, activeTool, layout, orientation, primaryAxis, onResetRef,
+  imageIds, activeTool, layout, orientation, primaryAxis, orientationMarkerType = 'cube', onResetRef,
 }: ViewportGridProps) {
   const singleRef = useRef<HTMLDivElement>(null);
   const axialRef = useRef<HTMLDivElement>(null);
@@ -199,6 +209,29 @@ export default function ViewportGrid({
     for (const fn of eventCleanupsRef.current) fn();
     eventCleanupsRef.current = [];
 
+    // Remove orientation marker actors from renderers before destroying
+    const toolGroup = ToolGroupManager.getToolGroup(TOOL_GROUP_ID);
+    if (toolGroup) {
+      try {
+        const tool = toolGroup.getToolInstance(OrientationMarkerTool.toolName) as any;
+        const engine = renderingEngineRef.current;
+        if (tool?.orientationMarkers && engine) {
+          for (const vp of engine.getViewports()) {
+            const marker = tool.orientationMarkers[vp.id];
+            if (!marker) continue;
+            try {
+              (vp as any).getRenderer?.()?.removeActor?.(marker.actor);
+              marker.orientationWidget?.setEnabled(false);
+              marker.orientationWidget?.delete();
+              marker.actor?.delete();
+            } catch { /* viewport may be partially torn down */ }
+          }
+          tool.orientationMarkers = {};
+        }
+        toolGroup.setToolDisabled(OrientationMarkerTool.toolName);
+      } catch { /* may already be cleaned up */ }
+    }
+
     ToolGroupManager.destroyToolGroup(TOOL_GROUP_ID);
     renderingEngineRef.current?.destroy();
     renderingEngineRef.current = null;
@@ -300,7 +333,8 @@ export default function ViewportGrid({
   function updateSingleInfo(viewportId: string) {
     const vp = renderingEngineRef.current?.getViewport(viewportId);
     if (!vp) return;
-    const { lower, upper } = (vp.getProperties() as any).voiRange ?? { lower: 0, upper: 0 };
+    const props = vp.getProperties() as any;
+    const { lower, upper } = props?.voiRange ?? { lower: 0, upper: 0 };
     const ww = upper - lower;
     const wc = lower + ww / 2;
     setSingleInfo({
@@ -363,7 +397,8 @@ export default function ViewportGrid({
       const updateVpInfo = () => {
         const vp = renderingEngineRef.current?.getViewport(vpId);
         if (!vp) return;
-        const { lower, upper } = (vp.getProperties() as any).voiRange ?? { lower: 0, upper: 0 };
+        const props = vp.getProperties() as any;
+        const { lower, upper } = props?.voiRange ?? { lower: 0, upper: 0 };
         const ww = upper - lower;
         const wc = lower + ww / 2;
         setMprInfo((prev) => ({
@@ -392,6 +427,10 @@ export default function ViewportGrid({
     toolGroup.addTool(ZoomTool.toolName);
     toolGroup.addTool(StackScrollTool.toolName);
     toolGroup.addTool(LengthTool.toolName);
+    toolGroup.addTool(OrientationMarkerTool.toolName, {
+      overlayMarkerType: MARKER_TYPE_MAP[orientationMarkerType],
+    });
+    toolGroup.setToolEnabled(OrientationMarkerTool.toolName);
 
     for (const id of viewportIds) {
       toolGroup.addViewport(id, renderingEngineId);
@@ -441,6 +480,29 @@ export default function ViewportGrid({
     };
     setLeftClickTool(toolMap[activeTool]);
   }, [activeTool, setLeftClickTool]);
+
+  // Switch orientation marker type at runtime (no viewport recreation)
+  const markerInitializedRef = useRef(false);
+  useEffect(() => {
+    if (!markerInitializedRef.current) {
+      markerInitializedRef.current = true;
+      return;
+    }
+    const toolGroup = ToolGroupManager.getToolGroup(TOOL_GROUP_ID);
+    if (!toolGroup) return;
+    const tool = toolGroup.getToolInstance(OrientationMarkerTool.toolName) as any;
+    if (!tool) return;
+    const engine = renderingEngineRef.current;
+    if (!engine) return;
+    tool.configuration.overlayMarkerType = MARKER_TYPE_MAP[orientationMarkerType];
+    // addAxisActorInViewport properly removes old actor from renderer before adding new one
+    for (const vp of engine.getViewports()) {
+      try {
+        tool.updatingOrientationMarker[vp.id] = false;
+        tool.addAxisActorInViewport(vp);
+      } catch { /* skip viewports not ready */ }
+    }
+  }, [orientationMarkerType]);
 
   // Capitalize first letter for label
   const orientationLabel = orientation.charAt(0).toUpperCase() + orientation.slice(1);
