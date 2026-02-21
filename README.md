@@ -39,6 +39,7 @@ DICOMassist uses a **two-call architecture** to intelligently filter slices:
 ## Features
 
 - **DICOM Viewer**: Cornerstone3D v4 with stack and MPR layouts, standard tools (W/L, Zoom, Pan, Length, Scroll)
+- **Orientation Markers**: Switchable 3D orientation indicators (Annotated Cube with L/R/A/P/S/I labels, Axes, or Human Model) in the viewport corner
 - **Drag-and-Drop Loading**: Drop a DICOM folder, progressive loading with prefetch progress
 - **Metadata Extraction**: Automatic extraction of study, series, and per-slice spatial metadata
 - **LLM Analysis**: Two-call architecture with structured selection planning and multimodal analysis
