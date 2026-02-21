@@ -13,7 +13,7 @@ interface SpotlightPromptProps {
 export default function SpotlightPrompt({ open, onClose, onSubmit, status, statusText }: SpotlightPromptProps) {
   const [value, setValue] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
-  const busy = status !== 'idle' && status !== 'error';
+  const busy = status !== 'idle' && status !== 'error' && status !== 'awaiting-confirmation';
 
   useEffect(() => {
     if (open) {

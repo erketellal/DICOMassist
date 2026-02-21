@@ -31,7 +31,7 @@ export default function ChatSidebar({
   const [input, setInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const busy = status !== 'idle' && status !== 'error';
+  const busy = status !== 'idle' && status !== 'error' && status !== 'awaiting-confirmation';
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });

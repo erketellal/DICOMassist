@@ -1,9 +1,23 @@
-import type { StudyMetadata } from '../dicom/types';
+import type { StudyMetadata, SeriesMetadata } from '../dicom/types';
 import type { SelectionPlan } from '../llm/types';
 import type { SelectedSlice } from './types';
 import { logger } from '../utils/logger';
 
 const MAX_SLICES = 20;
+
+/**
+ * Returns the imagePositionPatient index that varies between slices for a given plane.
+ * Axial → z (index 2), Sagittal → x (index 0), Coronal → y (index 1)
+ */
+function varyingAxisIndex(plane: SeriesMetadata['anatomicalPlane']): number {
+  switch (plane) {
+    case 'sagittal': return 0;
+    case 'coronal': return 1;
+    case 'axial':
+    case 'oblique':
+    default: return 2;
+  }
+}
 
 export function selectSlices(metadata: StudyMetadata, plan: SelectionPlan): SelectedSlice[] {
   // Find the target series by series number
@@ -18,10 +32,11 @@ export function selectSlices(metadata: StudyMetadata, plan: SelectionPlan): Sele
 }
 
 function selectFromSeries(
-  series: import('../dicom/types').SeriesMetadata,
+  series: SeriesMetadata,
   plan: SelectionPlan,
 ): SelectedSlice[] {
   const [rangeStart, rangeEnd] = plan.sliceRange;
+  const axisIdx = varyingAxisIndex(series.anatomicalPlane);
 
   // Filter slices within the instance number range
   const inRange = series.slices.filter(
@@ -30,18 +45,19 @@ function selectFromSeries(
 
   if (inRange.length === 0) {
     // Fallback: use all slices in the series
-    return applyStrategy(series.slices, plan);
+    return applyStrategy(series.slices, plan, axisIdx);
   }
 
   // Sort by instance number
   inRange.sort((a, b) => a.instanceNumber - b.instanceNumber);
 
-  return applyStrategy(inRange, plan);
+  return applyStrategy(inRange, plan, axisIdx);
 }
 
 function applyStrategy(
   slices: import('../dicom/types').SliceMetadata[],
   plan: SelectionPlan,
+  axisIdx: number,
 ): SelectedSlice[] {
   let selected: import('../dicom/types').SliceMetadata[];
 
@@ -89,6 +105,6 @@ function applyStrategy(
     imageId: s.imageId,
     instanceNumber: s.instanceNumber,
     sliceLocation: s.sliceLocation,
-    zPosition: s.imagePositionPatient[2],
+    zPosition: s.imagePositionPatient[axisIdx],
   }));
 }

@@ -184,11 +184,12 @@ export function buildAnalysisUserPrompt(
   lines.push('');
   lines.push(`IMPORTANT CONTEXT: You are viewing ${sliceLabels.length} sampled slices from a series of ${totalSlices} total slices. There are gaps between the images you see. A finding visible in one image may span more slices than shown. Account for this sampling when describing extent and when noting limitations.`);
   lines.push('');
-  lines.push(`You are provided EXACTLY ${sliceLabels.length} images, each labeled with its slice number out of ${totalSlices} total (e.g., "Slice 45/${totalSlices}").`);
-  lines.push(`The labels in order are: ${sliceLabels.join(', ')}.`);
-  lines.push(`When describing findings, reference slices using their label (e.g., "Slice 45/${totalSlices}") so the reader can navigate to them.`);
-  lines.push(`You may reference a range of slices (e.g., "Slices 45–66/${totalSlices}").`);
-  lines.push(`IMPORTANT: Only reference the slice numbers listed above. Do NOT reference slice numbers that were not provided.`);
+  lines.push(`You are provided EXACTLY ${sliceLabels.length} images. Each image is labeled with its series name, slice number, and z-position.`);
+  lines.push(`The images in order are:\n${sliceLabels.map((l, i) => `  ${i + 1}. ${l}`).join('\n')}`);
+  lines.push('');
+  lines.push(`When referencing findings, cite the slice number (e.g., "Slice 45/${totalSlices}") so the reader can navigate to it in the viewer.`);
+  lines.push(`You may reference a range (e.g., "Slices 45–66/${totalSlices}").`);
+  lines.push(`IMPORTANT: Only reference slice numbers from the list above. Do NOT invent or guess slice numbers that were not provided.`);
   lines.push('Please analyze these images in the context of the clinical question.');
 
   return lines.join('\n');

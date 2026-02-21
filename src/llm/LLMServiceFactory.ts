@@ -197,8 +197,10 @@ class OllamaService implements LLMService {
     sliceLabels: string[],
   ): Promise<string> {
     const base64Images = await Promise.all(images.map(blobToBase64));
-    const userContent = buildAnalysisUserPrompt(metadata, clinicalHint, plan, sliceLabels)
-      + `\n\nThe images are labeled in order: ${sliceLabels.join(', ')}.`;
+    const manifest = sliceLabels.map((l, i) => `  ${i + 1}. ${l}`).join('\n');
+    const userContent =
+      `IMAGE MANIFEST (${sliceLabels.length} images, in sequential order):\n${manifest}\n\nThe images are provided in the exact order listed above.\n\n` +
+      buildAnalysisUserPrompt(metadata, clinicalHint, plan, sliceLabels);
 
     return this.callOllama({
       model: this.visionModel,

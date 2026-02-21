@@ -6,7 +6,7 @@ import { selectSlices } from '../filtering/SliceSelector';
 import { exportSlicesToJpeg } from '../filtering/SliceExporter';
 import { logger } from '../utils/logger';
 
-export type ChatStatus = 'idle' | 'planning' | 'exporting' | 'analyzing' | 'following-up' | 'error';
+export type ChatStatus = 'idle' | 'planning' | 'awaiting-confirmation' | 'exporting' | 'analyzing' | 'following-up' | 'error';
 
 export interface PipelineStep {
   id: string;
@@ -21,7 +21,7 @@ export interface SliceMapping {
   instanceNumber: number;
   imageId: string;
   zPosition: number;
-  label: string;        // e.g. "Slice 45/187"
+  label: string;        // e.g. "SAG PD FAT SAT — Slice 45/187 (z=-120mm)"
 }
 
 export interface PipelineState {
@@ -41,6 +41,8 @@ interface UseLLMChatReturn {
   currentPlan: SelectionPlan | null;
   pipeline: PipelineState | null;
   startAnalysis: (hint: string, viewportContext?: ViewportContext) => Promise<void>;
+  confirmPlan: (adjustedPlan: SelectionPlan) => Promise<void>;
+  cancelPlan: () => void;
   sendFollowUp: (text: string) => Promise<void>;
   clearChat: () => void;
 }
@@ -48,6 +50,7 @@ interface UseLLMChatReturn {
 const STATUS_LABELS: Record<ChatStatus, string> = {
   idle: '',
   planning: 'Analyzing metadata...',
+  'awaiting-confirmation': 'Review selection plan...',
   exporting: 'Preparing images...',
   analyzing: 'Generating analysis...',
   'following-up': 'Thinking...',
@@ -125,6 +128,8 @@ export function useLLMChat(
   const [currentPlan, setCurrentPlan] = useState<SelectionPlan | null>(null);
   const [pipeline, setPipeline] = useState<PipelineState | null>(null);
   const abortRef = useRef(false);
+  const hintRef = useRef<string>('');
+  const planTimingRef = useRef<{ t0: number; t1: number }>({ t0: 0, t1: 0 });
 
   const startAnalysis = useCallback(async (hint: string, viewportContext?: ViewportContext) => {
     if (!metadata) return;
@@ -162,8 +167,8 @@ export function useLLMChat(
       }));
 
       logger.group('[DICOMassist] Analysis Pipeline');
-      logger.log('📋 Clinical hint:', hint);
-      logger.log('📊 Study metadata:', {
+      logger.log('Clinical hint:', hint);
+      logger.log('Study metadata:', {
         study: metadata.studyDescription,
         modality: metadata.modality,
         series: metadata.series.map((s) => ({
@@ -178,10 +183,10 @@ export function useLLMChat(
       const t1 = performance.now();
       if (abortRef.current) { logger.groupEnd(); return; }
 
-      logger.log('🎯 Call 1 — Raw plan:', rawPlan);
+      logger.log('Call 1 — Raw plan:', rawPlan);
       const plan = fixSelectionPlan(rawPlan, metadata);
       if (plan.sliceRange[0] !== rawPlan.sliceRange[0] || plan.sliceRange[1] !== rawPlan.sliceRange[1]) {
-        logger.log('🔧 Plan fixed:', `[${rawPlan.sliceRange}] → [${plan.sliceRange}]`);
+        logger.log('Plan fixed:', `[${rawPlan.sliceRange}] → [${plan.sliceRange}]`);
       }
 
       setCurrentPlan(plan);
@@ -195,13 +200,55 @@ export function useLLMChat(
           durationMs: Math.round(t1 - t0),
         }),
       }));
+
+      // Store context for continuation after user confirms
+      hintRef.current = hint;
+      planTimingRef.current = { t0, t1 };
+      setStatus('awaiting-confirmation');
+      logger.log('Awaiting user confirmation of selection plan');
+      logger.groupEnd();
+    } catch (err) {
+      logger.groupEnd();
+      if (abortRef.current) return;
+      const msg = err instanceof Error ? err.message : 'An unexpected error occurred';
+      setError(msg);
+      setStatus('error');
+    }
+  }, [metadata, providerConfig]);
+
+  const confirmPlan = useCallback(async (adjustedPlan: SelectionPlan) => {
+    if (!metadata) return;
+    abortRef.current = false;
+    setError(null);
+
+    const hint = hintRef.current;
+
+    // Update plan and pipeline with adjusted values
+    setCurrentPlan(adjustedPlan);
+    const planDetail = `Series #${adjustedPlan.targetSeries}, instances ${adjustedPlan.sliceRange[0]}–${adjustedPlan.sliceRange[1]}, W:${adjustedPlan.windowWidth} C:${adjustedPlan.windowCenter}`;
+    setPipeline((p) => p && ({
+      ...p,
+      plan: adjustedPlan,
+      steps: updateStep(p.steps, 'plan', {
+        status: 'done',
+        detail: planDetail,
+        durationMs: Math.round(planTimingRef.current.t1 - planTimingRef.current.t0),
+      }),
+    }));
+
+    try {
+      const service = createLLMService(providerConfig);
+
+      logger.group('[DICOMassist] Analysis Pipeline (continued)');
+      logger.log('Confirmed plan:', adjustedPlan);
+
       // Step 2: Select slices
       setPipeline((p) => p && ({
         ...p,
-        steps: updateStep(p.steps, 'select', { status: 'active', detail: `Applying ${plan.samplingStrategy} strategy...` }),
+        steps: updateStep(p.steps, 'select', { status: 'active', detail: `Applying ${adjustedPlan.samplingStrategy} strategy...` }),
       }));
-      const selectedSlices = selectSlices(metadata, plan);
-      logger.log(`🔍 Selected ${selectedSlices.length} slices:`, selectedSlices.map((s) => ({
+      const selectedSlices = selectSlices(metadata, adjustedPlan);
+      logger.log(`Selected ${selectedSlices.length} slices:`, selectedSlices.map((s) => ({
         instance: s.instanceNumber,
         z: s.zPosition.toFixed(1),
       })));
@@ -215,21 +262,17 @@ export function useLLMChat(
         throw new Error('No slices matched the selection plan. Try a different prompt.');
       }
 
-      const sliceDetail = `${selectedSlices.length} slices (z: ${selectedSlices[0].zPosition.toFixed(0)} to ${selectedSlices[selectedSlices.length - 1].zPosition.toFixed(0)}mm)`;
-      const targetSeries = metadata.series.find((s) => String(s.seriesNumber) === plan.targetSeries);
+      const targetSeries = metadata.series.find((s) => String(s.seriesNumber) === adjustedPlan.targetSeries);
       const totalSlices = targetSeries?.slices.length ?? selectedSlices.length;
-      const mappings: SliceMapping[] = selectedSlices.map((s, i) => ({
-        imageIndex: i + 1,
-        instanceNumber: s.instanceNumber,
-        imageId: s.imageId,
-        zPosition: s.zPosition,
-        label: `Slice ${s.instanceNumber}/${totalSlices}`,
-      }));
+      const seriesDesc = targetSeries?.seriesDescription || `Series #${adjustedPlan.targetSeries}`;
+      const axisLetter = targetSeries?.anatomicalPlane === 'sagittal' ? 'x'
+        : targetSeries?.anatomicalPlane === 'coronal' ? 'y' : 'z';
+      const sliceDetail = `${selectedSlices.length} slices (${axisLetter}: ${selectedSlices[0].zPosition.toFixed(0)} to ${selectedSlices[selectedSlices.length - 1].zPosition.toFixed(0)}mm)`;
+
       setPipeline((p) => p && ({
         ...p,
         sliceCount: selectedSlices.length,
         totalSlices,
-        sliceMappings: mappings,
         steps: updateStep(p.steps, 'select', { status: 'done', detail: sliceDetail }),
       }));
 
@@ -238,21 +281,36 @@ export function useLLMChat(
       const t2 = performance.now();
       setPipeline((p) => p && ({
         ...p,
-        steps: updateStep(p.steps, 'export', { status: 'active', detail: `Rendering ${selectedSlices.length} slices with W:${plan.windowWidth} C:${plan.windowCenter}...` }),
+        steps: updateStep(p.steps, 'export', { status: 'active', detail: `Rendering ${selectedSlices.length} slices with W:${adjustedPlan.windowWidth} C:${adjustedPlan.windowCenter}...` }),
       }));
 
-      const exported = await exportSlicesToJpeg(selectedSlices, plan.windowCenter, plan.windowWidth);
+      const exported = await exportSlicesToJpeg(selectedSlices, adjustedPlan.windowCenter, adjustedPlan.windowWidth);
       const t3 = performance.now();
       if (abortRef.current) { logger.groupEnd(); return; }
 
+      // Build mappings from EXPORTED results (not selectedSlices) to stay in sync
+      // If any image fails to render, it's excluded from both blobs and labels
+      const mappings: SliceMapping[] = exported.map((e, i) => ({
+        imageIndex: i + 1,
+        instanceNumber: e.instanceNumber,
+        imageId: selectedSlices.find((s) => s.instanceNumber === e.instanceNumber)?.imageId ?? '',
+        zPosition: e.zPosition,
+        label: `${seriesDesc} — Slice ${e.instanceNumber}/${totalSlices} (${axisLetter}=${e.zPosition.toFixed(0)}mm)`,
+      }));
+
       const sizes = exported.map((e) => `${(e.blob.size / 1024).toFixed(0)}KB`);
       const totalSize = exported.reduce((sum, e) => sum + e.blob.size, 0);
-      logger.log(`🖼️ Exported ${exported.length} JPEG images (sizes: ${sizes.join(', ')})`);
-      logger.log('📋 Slice mappings:', mappings.map((m) => `${m.label} (z=${m.zPosition.toFixed(1)})`));
+      logger.log(`Exported ${exported.length} JPEG images (sizes: ${sizes.join(', ')})`);
+      logger.log('Slice mappings:', mappings.map((m) => `${m.label}`));
+
+      if (exported.length < selectedSlices.length) {
+        logger.warn(`[Export] ${selectedSlices.length - exported.length} slices failed to render — labels rebuilt from successful exports`);
+      }
 
       setPipeline((p) => p && ({
         ...p,
         exportedSizes: sizes,
+        sliceMappings: mappings,
         steps: updateStep(p.steps, 'export', {
           status: 'done',
           detail: `${exported.length} images (${(totalSize / 1024).toFixed(0)}KB total)`,
@@ -270,12 +328,12 @@ export function useLLMChat(
 
       const blobs = exported.map((e) => e.blob);
       const sliceLabels = mappings.map((m) => m.label);
-      logger.log(`📡 Call 2 — Sending ${blobs.length} images to LLM (${sliceLabels.join(', ')})...`);
-      const analysisText = await service.analyzeSlices(blobs, metadata, hint, plan, sliceLabels);
+      logger.log(`Call 2 — Sending ${blobs.length} images to LLM (${sliceLabels.join(', ')})...`);
+      const analysisText = await service.analyzeSlices(blobs, metadata, hint, adjustedPlan, sliceLabels);
       const t5 = performance.now();
       if (abortRef.current) { logger.groupEnd(); return; }
 
-      logger.log('✅ Call 2 — Analysis response:', analysisText.slice(0, 200) + '...');
+      logger.log('Call 2 — Analysis response:', analysisText.slice(0, 200) + '...');
       logger.groupEnd();
 
       setPipeline((p) => p && ({
@@ -303,6 +361,20 @@ export function useLLMChat(
       setStatus('error');
     }
   }, [metadata, providerConfig]);
+
+  const cancelPlan = useCallback(() => {
+    abortRef.current = true;
+    setStatus('idle');
+    setCurrentPlan(null);
+    setPipeline(null);
+    // Remove the last user message (the hint that was added)
+    setMessages((prev) => {
+      if (prev.length === 0) return prev;
+      const last = prev[prev.length - 1];
+      if (last.role === 'user') return prev.slice(0, -1);
+      return prev;
+    });
+  }, []);
 
   const sendFollowUp = useCallback(async (text: string) => {
     if (!metadata) return;
@@ -356,6 +428,8 @@ export function useLLMChat(
     currentPlan,
     pipeline,
     startAnalysis,
+    confirmPlan,
+    cancelPlan,
     sendFollowUp,
     clearChat,
   };

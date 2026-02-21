@@ -10,6 +10,7 @@ import MetadataPanel from './ui/MetadataPanel';
 import SeriesBrowser from './ui/SeriesBrowser';
 import SpotlightPrompt from './ui/SpotlightPrompt';
 import ChatSidebar from './ui/ChatSidebar';
+import PlanPreviewModal from './ui/PlanPreviewModal';
 import SettingsPanel from './ui/SettingsPanel';
 import type { AnatomicalPlane } from './dicom/orientationUtils';
 import type { StudyMetadata } from './dicom/types';
@@ -58,6 +59,8 @@ export default function App() {
     currentPlan,
     pipeline,
     startAnalysis,
+    confirmPlan,
+    cancelPlan,
     sendFollowUp,
     clearChat,
   } = useLLMChat(studyMetadata, providerConfig);
@@ -175,6 +178,13 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [currentPlan, studyMetadata]); // intentionally omitting imageIds to avoid loop
 
+  // Close spotlight when plan preview modal opens
+  useEffect(() => {
+    if (status === 'awaiting-confirmation') {
+      setSpotlightOpen(false);
+    }
+  }, [status]);
+
   // Auto-open chat when analysis completes
   useEffect(() => {
     if (messages.length > 0 && status === 'idle') {
@@ -201,7 +211,9 @@ export default function App() {
       }
 
       if (e.key === 'Escape') {
-        if (spotlightOpen) {
+        if (status === 'awaiting-confirmation') {
+          cancelPlan();
+        } else if (spotlightOpen) {
           setSpotlightOpen(false);
         } else if (settingsOpen) {
           setSettingsOpen(false);
@@ -211,7 +223,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [imageIds.length, studyMetadata, spotlightOpen, settingsOpen]);
+  }, [imageIds.length, studyMetadata, spotlightOpen, settingsOpen, status, cancelPlan]);
 
   const handleReset = useCallback(() => {
     resetRef.current?.();
@@ -253,67 +265,120 @@ export default function App() {
     startAnalysis(hint, viewportContext);
   }, [startAnalysis, studyMetadata]);
 
+  const navigateTargetRef = useRef<{ instanceNumber: number; imageId: string } | null>(null);
+
   const handleNavigateToSlice = useCallback((mapping: SliceMapping) => {
+    if (!studyMetadata || !currentPlan) return;
+
+    // Find the target series from the plan that generated this mapping
+    const targetSeries = studyMetadata.series.find(
+      (s) => String(s.seriesNumber) === currentPlan.targetSeries,
+    );
+    if (!targetSeries) return;
+
+    // Check if we need to switch series first
+    const needsSeriesSwitch = targetSeries.seriesInstanceUID !== activeSeriesUID;
+
+    if (needsSeriesSwitch) {
+      logger.log(`[Navigate] Switching from series ${activeSeriesUID} → ${targetSeries.seriesInstanceUID} (${targetSeries.seriesDescription})`);
+      // Store the target so we can scroll after series loads
+      navigateTargetRef.current = { instanceNumber: mapping.instanceNumber, imageId: mapping.imageId };
+      const targetImageIds = targetSeries.slices.map((s) => s.imageId);
+      setImageIds(targetImageIds);
+      setActiveSeriesUID(targetSeries.seriesInstanceUID);
+      const plane = targetSeries.anatomicalPlane === 'oblique' ? 'axial' : targetSeries.anatomicalPlane;
+      setPrimaryAxis(plane);
+      setOrientation(plane);
+      setLayout('stack');
+      return; // scrollToSlice will be called by the effect below once images load
+    }
+
+    // Already on the correct series — scroll directly
+    scrollToSlice(mapping.instanceNumber, mapping.imageId, targetSeries);
+  }, [studyMetadata, currentPlan, activeSeriesUID]);
+
+  // After a series switch triggered by slice navigation, scroll to the target slice
+  useEffect(() => {
+    const target = navigateTargetRef.current;
+    if (!target || !studyMetadata || !currentPlan) return;
+
+    const targetSeries = studyMetadata.series.find(
+      (s) => String(s.seriesNumber) === currentPlan.targetSeries,
+    );
+    if (!targetSeries || targetSeries.seriesInstanceUID !== activeSeriesUID) return;
+
+    // Series is now active — try to scroll (with retries for viewport readiness)
+    let attempts = 0;
+    const tryScroll = () => {
+      const success = scrollToSlice(target.instanceNumber, target.imageId, targetSeries);
+      if (!success && attempts++ < 5) {
+        setTimeout(tryScroll, 200);
+      } else {
+        navigateTargetRef.current = null;
+      }
+    };
+    const timer = setTimeout(tryScroll, 100);
+    return () => clearTimeout(timer);
+  }, [activeSeriesUID, studyMetadata, currentPlan]);
+
+  function scrollToSlice(
+    instanceNumber: number,
+    imageId: string,
+    targetSeries: StudyMetadata['series'][number],
+  ): boolean {
     try {
       const engine = getRenderingEngine('dicomRenderingEngine');
-      if (!engine) return;
+      if (!engine) return false;
 
-      // Try CT_STACK first (native stack mode), fall back to other viewport types
       let viewport = engine.getViewport('CT_STACK') as IStackViewport | undefined;
       if (!viewport) {
         viewport = engine.getViewport('CT_SINGLE_VOL') as IStackViewport | undefined;
       }
-      if (!viewport) return;
+      if (!viewport) return false;
 
       const viewportIds = viewport.getImageIds();
+      if (viewportIds.length === 0) return false;
 
-      // Strategy 1: Find by instance number in the target series metadata (most reliable)
-      if (studyMetadata && currentPlan) {
-        const targetSeries = studyMetadata.series.find(
-          (s) => String(s.seriesNumber) === currentPlan.targetSeries,
-        );
-        if (targetSeries) {
-          const sliceIdx = targetSeries.slices.findIndex(
-            (s) => s.instanceNumber === mapping.instanceNumber,
-          );
-          if (sliceIdx >= 0 && sliceIdx < viewportIds.length) {
-            logger.log(`[Navigate] Instance #${mapping.instanceNumber} → series index ${sliceIdx}`);
-            viewport.setImageIdIndex(sliceIdx);
-            viewport.render();
-            return;
-          }
-        }
+      // Strategy 1: Find by instance number in the target series metadata
+      const sliceIdx = targetSeries.slices.findIndex(
+        (s) => s.instanceNumber === instanceNumber,
+      );
+      if (sliceIdx >= 0 && sliceIdx < viewportIds.length) {
+        logger.log(`[Navigate] Instance #${instanceNumber} → series index ${sliceIdx}`);
+        viewport.setImageIdIndex(sliceIdx);
+        viewport.render();
+        return true;
       }
 
       // Strategy 2: Direct imageId match
-      const exactIdx = viewportIds.indexOf(mapping.imageId);
+      const exactIdx = viewportIds.indexOf(imageId);
       if (exactIdx >= 0) {
         logger.log(`[Navigate] Exact imageId match at index ${exactIdx}`);
         viewport.setImageIdIndex(exactIdx);
         viewport.render();
-        return;
+        return true;
       }
 
-      // Strategy 3: Partial imageId match (Cornerstone may add suffixes like &frame=0)
+      // Strategy 3: Partial imageId match
       const partialIdx = viewportIds.findIndex(
-        (id) => id.includes(mapping.imageId) || mapping.imageId.includes(id),
+        (id) => id.includes(imageId) || imageId.includes(id),
       );
       if (partialIdx >= 0) {
         logger.log(`[Navigate] Partial imageId match at index ${partialIdx}`);
         viewport.setImageIdIndex(partialIdx);
         viewport.render();
-        return;
+        return true;
       }
 
-      logger.warn(`[Navigate] Failed to find slice for instance #${mapping.instanceNumber}`, {
-        mappingImageId: mapping.imageId,
+      logger.warn(`[Navigate] Failed to find slice for instance #${instanceNumber}`, {
+        imageId,
         viewportIdCount: viewportIds.length,
-        viewportIdSample: viewportIds.slice(0, 3),
       });
+      return false;
     } catch {
-      // viewport may not be ready
+      return false;
     }
-  }, [studyMetadata, currentPlan]);
+  }
 
   // Show chat or metadata panel (mutual exclusion)
   const handleToggleChat = useCallback(() => {
@@ -433,6 +498,15 @@ export default function App() {
         status={status}
         statusText={statusText}
       />
+      {status === 'awaiting-confirmation' && currentPlan && studyMetadata && (
+        <PlanPreviewModal
+          open
+          plan={currentPlan}
+          metadata={studyMetadata}
+          onAccept={confirmPlan}
+          onCancel={cancelPlan}
+        />
+      )}
       <SettingsPanel
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
