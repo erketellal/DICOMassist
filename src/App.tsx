@@ -7,6 +7,7 @@ import ViewportGrid, { type ActiveToolName, type LayoutType, type OrientationMar
 import Toolbar from './viewer/Toolbar';
 import LoadingOverlay from './viewer/LoadingOverlay';
 import MetadataPanel from './ui/MetadataPanel';
+import SeriesBrowser from './ui/SeriesBrowser';
 import SpotlightPrompt from './ui/SpotlightPrompt';
 import ChatSidebar from './ui/ChatSidebar';
 import SettingsPanel from './ui/SettingsPanel';
@@ -45,6 +46,8 @@ export default function App() {
   const [spotlightOpen, setSpotlightOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [providerConfig, setProviderConfig] = useState<ProviderConfig>(loadConfig);
+  const [showSeriesBrowser, setShowSeriesBrowser] = useState(false);
+  const [activeSeriesUID, setActiveSeriesUID] = useState<string>('');
   const resetRef = useRef<(() => void) | null>(null);
 
   const {
@@ -68,6 +71,10 @@ export default function App() {
     setPrimaryAxis(result.primaryAxis);
     setOrientation(result.primaryAxis);
     setStudyMetadata(result.studyMetadata);
+    setActiveSeriesUID(result.studyMetadata.primarySeriesUID);
+    if (result.studyMetadata.series.length > 1) {
+      setShowSeriesBrowser(true);
+    }
   }, []);
 
   // Prefetch all images after they're set
@@ -118,6 +125,7 @@ export default function App() {
         setImageIds(targetImageIds);
         // W/L and scroll will be applied after the viewport reloads with new imageIds
       }
+      setActiveSeriesUID(targetSeries.seriesInstanceUID);
     }
 
     // Apply W/L and scroll (may run before or after series switch)
@@ -323,6 +331,18 @@ export default function App() {
     });
   }, [studyMetadata]);
 
+  const handleSelectSeries = useCallback((seriesUID: string) => {
+    if (!studyMetadata || seriesUID === activeSeriesUID) return;
+    const series = studyMetadata.series.find((s) => s.seriesInstanceUID === seriesUID);
+    if (!series) return;
+    setImageIds(series.slices.map((s) => s.imageId));
+    setActiveSeriesUID(seriesUID);
+    const plane = series.anatomicalPlane === 'oblique' ? 'axial' : series.anatomicalPlane;
+    setPrimaryAxis(plane);
+    setOrientation(plane);
+    setLayout('stack');
+  }, [studyMetadata, activeSeriesUID]);
+
   if (!ready) {
     return (
       <div className="flex items-center justify-center h-full text-neutral-500">
@@ -346,6 +366,8 @@ export default function App() {
         onOrientationChange={setOrientation}
         primaryAxis={primaryAxis}
         onReset={handleReset}
+        showSeriesBrowser={showSeriesBrowser}
+        onToggleSeriesBrowser={studyMetadata && studyMetadata.series.length > 1 ? () => setShowSeriesBrowser((v) => !v) : undefined}
         showMetadata={showMetadata}
         onToggleMetadata={studyMetadata ? handleToggleMetadata : undefined}
         showChat={showChat}
@@ -356,6 +378,14 @@ export default function App() {
         onOrientationMarkerTypeChange={setOrientationMarkerType}
       />
       <div className="flex-1 min-h-0 flex overflow-hidden">
+        {showSeriesBrowser && studyMetadata && studyMetadata.series.length > 1 && (
+          <SeriesBrowser
+            metadata={studyMetadata}
+            activeSeriesUID={activeSeriesUID}
+            onSelectSeries={handleSelectSeries}
+            onClose={() => setShowSeriesBrowser(false)}
+          />
+        )}
         <div className="flex-1 min-w-0 relative overflow-hidden">
           <div className="absolute inset-0">
             <ViewportGrid
@@ -376,6 +406,7 @@ export default function App() {
         {showMetadata && studyMetadata && (
           <MetadataPanel
             metadata={studyMetadata}
+            activeSeriesUID={activeSeriesUID}
             onClose={() => setShowMetadata(false)}
           />
         )}

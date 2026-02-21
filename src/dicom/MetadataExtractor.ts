@@ -18,12 +18,31 @@ export interface RawFileRecord {
   convolutionKernel?: string;
   windowCenter?: number;
   windowWidth?: number;
+  // Imaging parameters
+  rows?: number;
+  columns?: number;
+  pixelSpacing?: [number, number];
+  protocolName?: string;
+  imageType?: string;
+
+  // MRI-specific
+  repetitionTime?: number;
+  echoTime?: number;
+  magneticFieldStrength?: number;
+
+  // CT-specific
+  kvp?: number;
+  xrayTubeCurrent?: number;
+
+  // Study-level
   studyDescription: string;
   bodyPartExamined?: string;
   patientAge?: string;
   patientSex?: string;
   studyDate?: string;
   institutionName?: string;
+  manufacturer?: string;
+  manufacturerModelName?: string;
   // Assigned after sorting + fileManager registration
   imageId: string;
 }
@@ -73,12 +92,24 @@ export function extractFileMetadata(dataSet: DataSet): Omit<RawFileRecord, 'imag
     convolutionKernel: dataSet.string('x00181210') ?? undefined,
     windowCenter: optFloat(dataSet, 'x00281050'),
     windowWidth: optFloat(dataSet, 'x00281051'),
+    rows: dataSet.uint16('x00280010'),
+    columns: dataSet.uint16('x00280011'),
+    pixelSpacing: parseFloatArray(dataSet.string('x00280030'), 2) as [number, number] | undefined,
+    protocolName: dataSet.string('x00181030') ?? undefined,
+    imageType: dataSet.string('x00080008') ?? undefined,
+    repetitionTime: optFloat(dataSet, 'x00180080'),
+    echoTime: optFloat(dataSet, 'x00180081'),
+    magneticFieldStrength: optFloat(dataSet, 'x00180087'),
+    kvp: optFloat(dataSet, 'x00180060'),
+    xrayTubeCurrent: optFloat(dataSet, 'x00181151'),
     studyDescription: dataSet.string('x00081030') ?? '',
     bodyPartExamined: dataSet.string('x00180015') ?? undefined,
     patientAge: dataSet.string('x00101010') ?? undefined,
     patientSex: dataSet.string('x00100040') ?? undefined,
     studyDate: dataSet.string('x00080020') ?? undefined,
     institutionName: dataSet.string('x00080080') ?? undefined,
+    manufacturer: dataSet.string('x00080070') ?? undefined,
+    manufacturerModelName: dataSet.string('x00081090') ?? undefined,
   };
 }
 
@@ -86,17 +117,34 @@ export function extractFileMetadata(dataSet: DataSet): Omit<RawFileRecord, 'imag
  * Group raw file records by series and build the full StudyMetadata object.
  * Records must already have imageId assigned (after fileManager registration).
  */
+function inferMRIWeighting(tr?: number, te?: number, description?: string): string | undefined {
+  if (tr == null || te == null) return undefined;
+  const isFatSat = description ? /([\b_]fs[\b_]|fat.?sat)/i.test(description) : false;
+  let base: string;
+  if (tr < 800 && te < 30) base = 'T1';
+  else if (tr > 1500 && te > 50) base = 'T2';
+  else if (tr > 1500 && te < 40) base = 'PD';
+  else return undefined;
+  return isFatSat ? `${base} fat-sat` : base;
+}
+
+// Non-image modalities that cannot be rendered in a viewport
+const NON_IMAGE_MODALITIES = new Set(['SR', 'KO', 'PR', 'SEG', 'DOC', 'REG']);
+
 export function buildStudyMetadata(records: RawFileRecord[]): StudyMetadata {
-  if (records.length === 0) {
+  // Filter out non-image modalities (SR reports, presentation states, etc.)
+  const imageRecords = records.filter((r) => !NON_IMAGE_MODALITIES.has(r.modality.toUpperCase()));
+
+  if (imageRecords.length === 0) {
     return { studyDescription: '', modality: 'unknown', primarySeriesUID: '', series: [] };
   }
 
   // Study-level: take from first record
-  const first = records[0];
+  const first = imageRecords[0];
 
   // Group by Series Instance UID
   const seriesMap = new Map<string, RawFileRecord[]>();
-  for (const rec of records) {
+  for (const rec of imageRecords) {
     const uid = rec.seriesInstanceUID;
     let list = seriesMap.get(uid);
     if (!list) {
@@ -152,6 +200,19 @@ export function buildStudyMetadata(records: RawFileRecord[]): StudyMetadata {
       convolutionKernel: rep.convolutionKernel,
       windowCenter: rep.windowCenter,
       windowWidth: rep.windowWidth,
+      rows: rep.rows,
+      columns: rep.columns,
+      pixelSpacing: rep.pixelSpacing,
+      protocolName: rep.protocolName,
+      imageType: rep.imageType,
+      repetitionTime: rep.repetitionTime,
+      echoTime: rep.echoTime,
+      magneticFieldStrength: rep.magneticFieldStrength,
+      estimatedWeighting: rep.modality === 'MR'
+        ? inferMRIWeighting(rep.repetitionTime, rep.echoTime, rep.seriesDescription)
+        : undefined,
+      kvp: rep.kvp,
+      xrayTubeCurrent: rep.xrayTubeCurrent,
       anatomicalPlane: plane === 'axial' || plane === 'coronal' || plane === 'sagittal' ? plane : 'oblique',
       zMin,
       zMax,
@@ -192,6 +253,8 @@ export function buildStudyMetadata(records: RawFileRecord[]): StudyMetadata {
     patientSex: first.patientSex,
     studyDate: first.studyDate,
     institutionName: first.institutionName,
+    manufacturer: first.manufacturer,
+    manufacturerModelName: first.manufacturerModelName,
     primarySeriesUID: primary.seriesInstanceUID,
     series,
   };

@@ -19,6 +19,23 @@ function formatSeriesSummary(s: SeriesMetadata): string {
   if (s.windowCenter != null && s.windowWidth != null) {
     parts.push(`preset W/L: W=${Math.round(s.windowWidth)} C=${Math.round(s.windowCenter)}`);
   }
+  if (s.rows != null && s.columns != null) {
+    let matrixStr = `matrix: ${s.rows}×${s.columns}`;
+    if (s.pixelSpacing) matrixStr += ` @ ${s.pixelSpacing[0].toFixed(2)}×${s.pixelSpacing[1].toFixed(2)}mm`;
+    parts.push(matrixStr);
+  }
+  if (s.estimatedWeighting) {
+    let mriStr = s.estimatedWeighting;
+    if (s.repetitionTime != null && s.echoTime != null) {
+      mriStr += ` (TR:${Math.round(s.repetitionTime)} TE:${Math.round(s.echoTime)})`;
+    }
+    parts.push(mriStr);
+  }
+  if (s.kvp != null) {
+    let ctStr = `${s.kvp}kV`;
+    if (s.xrayTubeCurrent != null) ctStr += ` ${s.xrayTubeCurrent}mA`;
+    parts.push(ctStr);
+  }
   return parts.join(' | ');
 }
 
@@ -36,6 +53,13 @@ function formatMetadataSummary(metadata: StudyMetadata): string {
     lines.push(`Study Date: ${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`);
   }
   if (metadata.institutionName) lines.push(`Institution: ${metadata.institutionName}`);
+  // Scanner line: compose from manufacturer, model, and field strength
+  const scannerParts: string[] = [];
+  if (metadata.manufacturer) scannerParts.push(metadata.manufacturer.trim());
+  if (metadata.manufacturerModelName) scannerParts.push(metadata.manufacturerModelName.trim());
+  const mrSeries = metadata.series.find((s) => s.modality === 'MR' && s.magneticFieldStrength);
+  if (mrSeries?.magneticFieldStrength) scannerParts.push(`${mrSeries.magneticFieldStrength}T`);
+  if (scannerParts.length > 0) lines.push(`Scanner: ${scannerParts.join(' ')}`);
 
   lines.push('', `=== AVAILABLE SERIES (${metadata.series.length}) ===`);
   for (const s of metadata.series) {
@@ -142,6 +166,16 @@ export function buildAnalysisUserPrompt(
     }
     if (series.sliceThickness != null) {
       lines.push(`Slice thickness: ${series.sliceThickness}mm`);
+    }
+    if (series.pixelSpacing) {
+      lines.push(`In-plane resolution: ${series.pixelSpacing[0].toFixed(2)}×${series.pixelSpacing[1].toFixed(2)}mm`);
+    }
+    if (series.estimatedWeighting) {
+      let weightLine = `MRI weighting: ${series.estimatedWeighting}`;
+      if (series.repetitionTime != null && series.echoTime != null) {
+        weightLine += ` (TR:${Math.round(series.repetitionTime)}ms TE:${Math.round(series.echoTime)}ms)`;
+      }
+      lines.push(weightLine);
     }
   }
   lines.push(`Window: W=${plan.windowWidth} C=${plan.windowCenter}`);

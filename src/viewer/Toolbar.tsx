@@ -12,6 +12,7 @@ import {
   MessageSquare,
   Settings,
   Compass,
+  Layers,
 } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import type { ActiveToolName, LayoutType, OrientationMarkerType } from './ViewportGrid';
@@ -26,6 +27,8 @@ interface ToolbarProps {
   onOrientationChange: (orientation: AnatomicalPlane) => void;
   primaryAxis: AnatomicalPlane;
   onReset: () => void;
+  showSeriesBrowser?: boolean;
+  onToggleSeriesBrowser?: () => void;
   showMetadata?: boolean;
   onToggleMetadata?: () => void;
   showChat?: boolean;
@@ -66,6 +69,7 @@ export default function Toolbar({
   orientation, onOrientationChange,
   primaryAxis,
   onReset,
+  showSeriesBrowser, onToggleSeriesBrowser,
   showMetadata, onToggleMetadata,
   showChat, onToggleChat,
   onOpenSpotlight, onOpenSettings,
@@ -129,6 +133,21 @@ export default function Toolbar({
         <RotateCcw className="w-5 h-5" />
         <span className="hidden sm:inline">Reset</span>
       </button>
+
+      {/* Series browser toggle */}
+      {onToggleSeriesBrowser && (
+        <>
+          <div className="w-px h-6 bg-neutral-700 mx-1" />
+          <button
+            onClick={onToggleSeriesBrowser}
+            title="Series browser"
+            className={btnClass(showSeriesBrowser)}
+          >
+            <Layers className="w-5 h-5" />
+            <span className="hidden sm:inline">Series</span>
+          </button>
+        </>
+      )}
 
       <div className="w-px h-6 bg-neutral-700 mx-1" />
 

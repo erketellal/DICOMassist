@@ -4,6 +4,7 @@ import type { StudyMetadata } from '../dicom/types';
 
 interface MetadataPanelProps {
   metadata: StudyMetadata;
+  activeSeriesUID?: string;
   onClose: () => void;
 }
 
@@ -12,9 +13,12 @@ function formatDate(dateStr?: string): string {
   return `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}`;
 }
 
-export default function MetadataPanel({ metadata, onClose }: MetadataPanelProps) {
+export default function MetadataPanel({ metadata, activeSeriesUID, onClose }: MetadataPanelProps) {
   const [studyExpanded, setStudyExpanded] = useState(true);
   const [seriesExpanded, setSeriesExpanded] = useState(true);
+
+  const activeSeries = metadata.series.find((s) => s.seriesInstanceUID === activeSeriesUID)
+    ?? metadata.series.find((s) => s.seriesInstanceUID === metadata.primarySeriesUID);
 
   return (
     <div className="w-72 h-full bg-neutral-900 border-l border-neutral-700 flex flex-col overflow-hidden">
@@ -47,27 +51,32 @@ export default function MetadataPanel({ metadata, onClose }: MetadataPanelProps)
             <MetaRow label="Patient Sex" value={metadata.patientSex} />
             <MetaRow label="Study Date" value={formatDate(metadata.studyDate)} />
             <MetaRow label="Institution" value={metadata.institutionName} />
+            <MetaRow
+              label="Scanner"
+              value={[metadata.manufacturer, metadata.manufacturerModelName].filter(Boolean).join(' ') || undefined}
+            />
           </div>
         )}
 
-        {/* Series Section */}
-        <button
-          onClick={() => setSeriesExpanded(!seriesExpanded)}
-          className="flex items-center gap-1 w-full px-3 py-2 text-left text-neutral-300 hover:bg-neutral-800 border-t border-neutral-800"
-        >
-          {seriesExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-          <span className="font-medium">Series ({metadata.series.length})</span>
-        </button>
-        {seriesExpanded && (
-          <div className="px-3 pb-2 space-y-2">
-            {metadata.series.map((s) => (
-              <SeriesCard
-                key={s.seriesInstanceUID}
-                series={s}
-                isPrimary={s.seriesInstanceUID === metadata.primarySeriesUID}
-              />
-            ))}
-          </div>
+        {/* Active Series Section */}
+        {activeSeries && (
+          <>
+            <button
+              onClick={() => setSeriesExpanded(!seriesExpanded)}
+              className="flex items-center gap-1 w-full px-3 py-2 text-left text-neutral-300 hover:bg-neutral-800 border-t border-neutral-800"
+            >
+              {seriesExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+              <span className="font-medium">Active Series</span>
+            </button>
+            {seriesExpanded && (
+              <div className="px-3 pb-2">
+                <SeriesCard
+                  series={activeSeries}
+                  isPrimary={activeSeries.seriesInstanceUID === metadata.primarySeriesUID}
+                />
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -105,6 +114,21 @@ function SeriesCard({ series, isPrimary }: { series: import('../dicom/types').Se
         )}
         {series.convolutionKernel && (
           <div>Kernel: {series.convolutionKernel}</div>
+        )}
+        {series.rows != null && series.columns != null && (
+          <div>
+            Matrix: {series.rows}&times;{series.columns}
+            {series.pixelSpacing && ` @ ${series.pixelSpacing[0].toFixed(2)}mm`}
+          </div>
+        )}
+        {series.estimatedWeighting && (
+          <div>Weighting: {series.estimatedWeighting}{series.repetitionTime != null && series.echoTime != null && ` (TR:${Math.round(series.repetitionTime)} TE:${Math.round(series.echoTime)})`}</div>
+        )}
+        {series.magneticFieldStrength != null && (
+          <div>Field: {series.magneticFieldStrength}T</div>
+        )}
+        {series.kvp != null && (
+          <div>KVP: {series.kvp}{series.xrayTubeCurrent != null ? ` \u00b7 ${series.xrayTubeCurrent}mA` : ''}</div>
         )}
         {series.windowCenter != null && series.windowWidth != null && (
           <div>W:{Math.round(series.windowWidth)} C:{Math.round(series.windowCenter)}</div>

@@ -16,6 +16,24 @@ export interface SeriesMetadata {
   convolutionKernel?: string;
   windowCenter?: number;
   windowWidth?: number;
+
+  // Imaging parameters
+  rows?: number;
+  columns?: number;
+  pixelSpacing?: [number, number];
+  protocolName?: string;
+  imageType?: string;
+
+  // MRI-specific
+  repetitionTime?: number;
+  echoTime?: number;
+  magneticFieldStrength?: number;
+  estimatedWeighting?: string;
+
+  // CT-specific
+  kvp?: number;
+  xrayTubeCurrent?: number;
+
   anatomicalPlane: 'axial' | 'coronal' | 'sagittal' | 'oblique';
   zMin: number;
   zMax: number;
@@ -32,6 +50,8 @@ export interface StudyMetadata {
   patientSex?: string;
   studyDate?: string;
   institutionName?: string;
+  manufacturer?: string;
+  manufacturerModelName?: string;
   primarySeriesUID: string;
   series: SeriesMetadata[];
 }
