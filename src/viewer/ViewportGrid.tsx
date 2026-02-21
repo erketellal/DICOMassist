@@ -106,6 +106,8 @@ export default function ViewportGrid({
   const coronalRef = useRef<HTMLDivElement>(null);
   const renderingEngineRef = useRef<RenderingEngine | null>(null);
   const eventCleanupsRef = useRef<(() => void)[]>([]);
+  const markerTypeRef = useRef(orientationMarkerType);
+  markerTypeRef.current = orientationMarkerType;
 
   const [singleInfo, setSingleInfo] = useState<ViewportInfo>({ current: 0, total: 0, ww: 0, wc: 0 });
   const [mprInfo, setMprInfo] = useState<Record<string, ViewportInfo>>({
@@ -427,14 +429,19 @@ export default function ViewportGrid({
     toolGroup.addTool(ZoomTool.toolName);
     toolGroup.addTool(StackScrollTool.toolName);
     toolGroup.addTool(LengthTool.toolName);
-    toolGroup.addTool(OrientationMarkerTool.toolName, {
-      overlayMarkerType: MARKER_TYPE_MAP[orientationMarkerType],
-    });
-    toolGroup.setToolEnabled(OrientationMarkerTool.toolName);
+    toolGroup.addTool(OrientationMarkerTool.toolName);
+    // Set marker type directly on instance via ref (avoids stale closure from useEffect setTimeout)
+    const markerTool = toolGroup.getToolInstance(OrientationMarkerTool.toolName) as any;
+    if (markerTool) {
+      markerTool.configuration.overlayMarkerType = MARKER_TYPE_MAP[markerTypeRef.current];
+    }
 
     for (const id of viewportIds) {
       toolGroup.addViewport(id, renderingEngineId);
     }
+
+    // Enable AFTER viewports are added — initViewports runs once with all viewports ready
+    toolGroup.setToolEnabled(OrientationMarkerTool.toolName);
 
     return toolGroup;
   }
@@ -482,12 +489,7 @@ export default function ViewportGrid({
   }, [activeTool, setLeftClickTool]);
 
   // Switch orientation marker type at runtime (no viewport recreation)
-  const markerInitializedRef = useRef(false);
   useEffect(() => {
-    if (!markerInitializedRef.current) {
-      markerInitializedRef.current = true;
-      return;
-    }
     const toolGroup = ToolGroupManager.getToolGroup(TOOL_GROUP_ID);
     if (!toolGroup) return;
     const tool = toolGroup.getToolInstance(OrientationMarkerTool.toolName) as any;
