@@ -35,6 +35,8 @@ export interface SeriesMetadata {
   xrayTubeCurrent?: number;
 
   anatomicalPlane: 'axial' | 'coronal' | 'sagittal' | 'oblique';
+  isScout: boolean;
+  priorityScore: number;
   zMin: number;
   zMax: number;
   zCoverageInMm: number;

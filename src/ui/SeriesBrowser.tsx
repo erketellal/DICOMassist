@@ -9,6 +9,9 @@ interface SeriesBrowserProps {
 }
 
 export default function SeriesBrowser({ metadata, activeSeriesUID, onSelectSeries, onClose }: SeriesBrowserProps) {
+  const clinicalSeries = metadata.series.filter((s) => !s.isScout);
+  const scoutSeries = metadata.series.filter((s) => s.isScout);
+
   return (
     <div className="w-64 h-full bg-neutral-900 border-r border-neutral-700 flex flex-col overflow-hidden">
       {/* Header */}
@@ -29,7 +32,19 @@ export default function SeriesBrowser({ metadata, activeSeriesUID, onSelectSerie
 
       {/* Series list */}
       <div className="flex-1 overflow-y-auto py-1">
-        {metadata.series.map((series) => (
+        {clinicalSeries.map((series) => (
+          <SeriesItem
+            key={series.seriesInstanceUID}
+            series={series}
+            isActive={series.seriesInstanceUID === activeSeriesUID}
+            isPrimary={series.seriesInstanceUID === metadata.primarySeriesUID}
+            onSelect={() => onSelectSeries(series.seriesInstanceUID)}
+          />
+        ))}
+        {scoutSeries.length > 0 && clinicalSeries.length > 0 && (
+          <div className="mx-3 my-1 border-t border-neutral-700/50" />
+        )}
+        {scoutSeries.map((series) => (
           <SeriesItem
             key={series.seriesInstanceUID}
             series={series}
@@ -69,7 +84,7 @@ function SeriesItem({
         isActive
           ? 'bg-blue-950/50 border-l-2 border-blue-500'
           : 'hover:bg-neutral-800 border-l-2 border-transparent'
-      }`}
+      } ${series.isScout ? 'opacity-50' : ''}`}
     >
       {/* Line 1: series number + description + badges */}
       <div className="flex items-center gap-1.5 text-xs">
@@ -78,6 +93,11 @@ function SeriesItem({
         </span>
         {isPrimary && (
           <span className="shrink-0 w-1.5 h-1.5 bg-green-400 rounded-full" title="Primary series" />
+        )}
+        {series.isScout && (
+          <span className="shrink-0 text-[10px] font-medium text-neutral-400 bg-neutral-700/60 px-1 rounded">
+            Scout
+          </span>
         )}
       </div>
       {/* Line 2: plane, slice count, thickness, matrix, weighting */}

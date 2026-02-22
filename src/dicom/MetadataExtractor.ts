@@ -131,6 +131,51 @@ function inferMRIWeighting(tr?: number, te?: number, description?: string): stri
 // Non-image modalities that cannot be rendered in a viewport
 const NON_IMAGE_MODALITIES = new Set(['SR', 'KO', 'PR', 'SEG', 'DOC', 'REG']);
 
+const SCOUT_DESCRIPTION_PATTERN = /\b(scout|localizer|survey)\b/i;
+
+function detectScout(description: string, imageType: string | undefined, rows: number | undefined, columns: number | undefined): boolean {
+  if (SCOUT_DESCRIPTION_PATTERN.test(description)) return true;
+  if (imageType && imageType.toUpperCase().includes('LOCALIZER')) return true;
+  if ((rows != null && rows < 256) || (columns != null && columns < 256)) return true;
+  return false;
+}
+
+function computePriorityScore(series: SeriesMetadata): number {
+  let score = 0;
+
+  // Resolution
+  const matrix = Math.min(series.rows ?? 0, series.columns ?? 0);
+  if (matrix >= 512) score += 10;
+  else if (matrix >= 256) score += 5;
+
+  // Slice count (cap at +5)
+  score += Math.min(series.slices.length / 10, 5);
+
+  // Orientation preference by modality
+  const mod = series.modality.toUpperCase();
+  const plane = series.anatomicalPlane;
+  if (mod === 'MR') {
+    if (plane === 'sagittal') score += 3;
+    else if (plane === 'coronal') score += 2;
+    else if (plane === 'axial') score += 1;
+  } else if (mod === 'CT') {
+    if (plane === 'axial') score += 3;
+    else if (plane === 'coronal') score += 2;
+    else if (plane === 'sagittal') score += 1;
+  }
+
+  // Slice thickness
+  if (series.sliceThickness != null) {
+    if (series.sliceThickness <= 1) score += 2;
+    else if (series.sliceThickness <= 3) score += 1;
+  }
+
+  // Tiebreaker: lower series number
+  score += (100 - series.seriesNumber) * 0.01;
+
+  return score;
+}
+
 export function buildStudyMetadata(records: RawFileRecord[]): StudyMetadata {
   // Filter out non-image modalities (SR reports, presentation states, etc.)
   const imageRecords = records.filter((r) => !NON_IMAGE_MODALITIES.has(r.modality.toUpperCase()));
@@ -190,7 +235,11 @@ export function buildStudyMetadata(records: RawFileRecord[]): StudyMetadata {
       Math.max(...instanceNumbers),
     ];
 
-    series.push({
+    const isScout = detectScout(rep.seriesDescription, rep.imageType, rep.rows, rep.columns);
+    const anatomicalPlane: SeriesMetadata['anatomicalPlane'] =
+      plane === 'axial' || plane === 'coronal' || plane === 'sagittal' ? plane : 'oblique';
+
+    const sm: SeriesMetadata = {
       seriesInstanceUID: uid,
       seriesNumber: rep.seriesNumber,
       seriesDescription: rep.seriesDescription,
@@ -213,37 +262,26 @@ export function buildStudyMetadata(records: RawFileRecord[]): StudyMetadata {
         : undefined,
       kvp: rep.kvp,
       xrayTubeCurrent: rep.xrayTubeCurrent,
-      anatomicalPlane: plane === 'axial' || plane === 'coronal' || plane === 'sagittal' ? plane : 'oblique',
+      anatomicalPlane,
+      isScout,
+      priorityScore: 0, // computed after construction
       zMin,
       zMax,
       zCoverageInMm,
       instanceNumberRange,
       slices,
-    });
+    };
+    sm.priorityScore = isScout ? -1 : computePriorityScore(sm);
+    series.push(sm);
   }
 
   // Sort series by series number
   series.sort((a, b) => a.seriesNumber - b.seriesNumber);
 
-  // Identify primary series: axial with most slices, tie-break lowest series number.
-  // Fallback to largest series if no axial series exists.
-  const axialSeries = series.filter((s) => s.anatomicalPlane === 'axial');
-  let primary: SeriesMetadata;
-  if (axialSeries.length > 0) {
-    primary = axialSeries.reduce((best, s) =>
-      s.slices.length > best.slices.length ||
-      (s.slices.length === best.slices.length && s.seriesNumber < best.seriesNumber)
-        ? s
-        : best
-    );
-  } else {
-    primary = series.reduce((best, s) =>
-      s.slices.length > best.slices.length ||
-      (s.slices.length === best.slices.length && s.seriesNumber < best.seriesNumber)
-        ? s
-        : best
-    );
-  }
+  // Identify primary series: highest priority score (scouts are excluded via -1 score)
+  const primary = series.reduce((best, s) =>
+    s.priorityScore > best.priorityScore ? s : best
+  );
 
   return {
     studyDescription: first.studyDescription,
