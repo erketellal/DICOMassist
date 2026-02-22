@@ -14,8 +14,13 @@ import {
   ZoomTool,
   StackScrollTool,
   LengthTool,
+  CrosshairsTool,
+  AngleTool,
+  EllipticalROITool,
+  PlanarRotateTool,
   OrientationMarkerTool,
   Enums as csToolsEnums,
+  utilities as csToolsUtilities,
 } from '@cornerstonejs/tools';
 import type { AnatomicalPlane } from '../dicom/orientationUtils';
 
@@ -24,6 +29,7 @@ const TOOL_GROUP_ID = 'mainTools';
 const STACK_VIEWPORT_ID = 'CT_STACK';
 const VOLUME_SINGLE_VP_ID = 'CT_SINGLE_VOL';
 const MPR_VIEWPORT_IDS = ['CT_AXIAL', 'CT_SAGITTAL', 'CT_CORONAL'];
+const GRID_VIEWPORT_IDS = ['VP_GRID_0', 'VP_GRID_1', 'VP_GRID_2', 'VP_GRID_3'];
 const VOLUME_ID = 'dicomVolume';
 
 let toolsRegistered = false;
@@ -35,6 +41,10 @@ function registerTools() {
   addTool(ZoomTool);
   addTool(StackScrollTool);
   addTool(LengthTool);
+  addTool(CrosshairsTool);
+  addTool(AngleTool);
+  addTool(EllipticalROITool);
+  addTool(PlanarRotateTool);
   addTool(OrientationMarkerTool);
   toolsRegistered = true;
 }
@@ -45,8 +55,12 @@ const ORIENTATION_MAP: Record<AnatomicalPlane, Enums.OrientationAxis> = {
   coronal: Enums.OrientationAxis.CORONAL,
 };
 
-export type ActiveToolName = 'WindowLevel' | 'Pan' | 'Zoom' | 'Length';
-export type LayoutType = 'stack' | 'mpr';
+export type ActiveToolName =
+  | 'WindowLevel' | 'Pan' | 'Zoom'
+  | 'Length' | 'Angle' | 'EllipticalROI'
+  | 'Crosshairs' | 'Rotate';
+
+export type LayoutType = '1x1' | '1x2' | '2x1' | '2x2' | 'mpr';
 export type OrientationMarkerType = 'cube' | 'axes' | 'custom';
 
 const MARKER_TYPE_MAP: Record<OrientationMarkerType, number> = {
@@ -54,6 +68,17 @@ const MARKER_TYPE_MAP: Record<OrientationMarkerType, number> = {
   axes: OrientationMarkerTool.OVERLAY_MARKER_TYPES.AXES,
   custom: OrientationMarkerTool.OVERLAY_MARKER_TYPES.CUSTOM,
 };
+
+const ALL_LEFT_CLICK_TOOLS = [
+  WindowLevelTool.toolName,
+  PanTool.toolName,
+  ZoomTool.toolName,
+  LengthTool.toolName,
+  AngleTool.toolName,
+  EllipticalROITool.toolName,
+  CrosshairsTool.toolName,
+  PlanarRotateTool.toolName,
+];
 
 interface ViewportInfo {
   current: number;
@@ -70,6 +95,10 @@ interface ViewportGridProps {
   primaryAxis: AnatomicalPlane;
   orientationMarkerType?: OrientationMarkerType;
   onResetRef?: React.MutableRefObject<(() => void) | null>;
+  invert?: boolean;
+  flipH?: boolean;
+  flipV?: boolean;
+  cineEnabled?: boolean;
 }
 
 function ViewportOverlay({ label, info }: { label: string; info: ViewportInfo }) {
@@ -98,16 +127,28 @@ function ViewportOverlay({ label, info }: { label: string; info: ViewportInfo })
 }
 
 export default function ViewportGrid({
-  imageIds, activeTool, layout, orientation, primaryAxis, orientationMarkerType = 'cube', onResetRef,
+  imageIds, activeTool, layout, orientation, primaryAxis,
+  orientationMarkerType = 'cube', onResetRef,
+  invert = false, flipH = false, flipV = false, cineEnabled = false,
 }: ViewportGridProps) {
   const singleRef = useRef<HTMLDivElement>(null);
   const axialRef = useRef<HTMLDivElement>(null);
   const sagittalRef = useRef<HTMLDivElement>(null);
   const coronalRef = useRef<HTMLDivElement>(null);
+  const gridRef0 = useRef<HTMLDivElement>(null);
+  const gridRef1 = useRef<HTMLDivElement>(null);
+  const gridRef2 = useRef<HTMLDivElement>(null);
+  const gridRef3 = useRef<HTMLDivElement>(null);
   const renderingEngineRef = useRef<RenderingEngine | null>(null);
   const eventCleanupsRef = useRef<(() => void)[]>([]);
   const markerTypeRef = useRef(orientationMarkerType);
   markerTypeRef.current = orientationMarkerType;
+
+  // Refs for state read inside setup functions (after the 50ms setTimeout)
+  const activeToolRef = useRef<ActiveToolName>(activeTool);
+  activeToolRef.current = activeTool;
+  const togglesRef = useRef({ invert: false, flipH: false, flipV: false, cine: false });
+  togglesRef.current = { invert, flipH, flipV, cine: cineEnabled };
 
   const [singleInfo, setSingleInfo] = useState<ViewportInfo>({ current: 0, total: 0, ww: 0, wc: 0 });
   const [mprInfo, setMprInfo] = useState<Record<string, ViewportInfo>>({
@@ -137,8 +178,11 @@ export default function ViewportGrid({
     onResetRef.current = () => {
       const engine = renderingEngineRef.current;
       if (!engine) return;
-      const viewports = engine.getViewports();
-      for (const vp of viewports) {
+      // Stop cine on all viewports
+      for (const vp of engine.getViewports()) {
+        try { csToolsUtilities.cine.stopClip((vp as any).element); } catch { /* ok */ }
+      }
+      for (const vp of engine.getViewports()) {
         vp.resetCamera();
         (vp as any).resetProperties?.();
         vp.render();
@@ -149,7 +193,10 @@ export default function ViewportGrid({
 
   // Resize viewports when container dimensions change
   useEffect(() => {
-    const elements = [singleRef.current, axialRef.current, sagittalRef.current, coronalRef.current].filter(Boolean) as HTMLDivElement[];
+    const elements = [
+      singleRef.current, axialRef.current, sagittalRef.current, coronalRef.current,
+      gridRef0.current, gridRef1.current, gridRef2.current, gridRef3.current,
+    ].filter(Boolean) as HTMLDivElement[];
     if (elements.length === 0) return;
 
     const observer = new ResizeObserver(() => {
@@ -165,7 +212,10 @@ export default function ViewportGrid({
 
   // Prevent browser zoom on trackpad pinch and route to Cornerstone zoom
   useEffect(() => {
-    const elements = [singleRef.current, axialRef.current, sagittalRef.current, coronalRef.current].filter(Boolean) as HTMLDivElement[];
+    const elements = [
+      singleRef.current, axialRef.current, sagittalRef.current, coronalRef.current,
+      gridRef0.current, gridRef1.current, gridRef2.current, gridRef3.current,
+    ].filter(Boolean) as HTMLDivElement[];
     if (elements.length === 0) return;
 
     function handleWheel(e: WheelEvent) {
@@ -175,7 +225,6 @@ export default function ViewportGrid({
       const engine = renderingEngineRef.current;
       if (!engine) return;
 
-      // Find the viewport whose element matches the event target
       for (const vp of engine.getViewports()) {
         if ((e.currentTarget as Node).contains(e.target as Node)) {
           const factor = 1 - e.deltaY * 0.01;
@@ -187,7 +236,6 @@ export default function ViewportGrid({
       }
     }
 
-    // Safari fires gesturestart/gesturechange for pinch — prevent those too
     function preventGesture(e: Event) {
       e.preventDefault();
     }
@@ -206,6 +254,84 @@ export default function ViewportGrid({
       }
     };
   }, [layout]);
+
+  // Apply invert toggle
+  useEffect(() => {
+    const engine = renderingEngineRef.current;
+    if (!engine) return;
+    for (const vp of engine.getViewports()) {
+      vp.setProperties({ invert });
+      vp.render();
+    }
+  }, [invert]);
+
+  // Apply flip horizontal
+  useEffect(() => {
+    const engine = renderingEngineRef.current;
+    if (!engine) return;
+    for (const vp of engine.getViewports()) {
+      vp.setCamera({ flipHorizontal: flipH });
+      vp.render();
+    }
+  }, [flipH]);
+
+  // Apply flip vertical
+  useEffect(() => {
+    const engine = renderingEngineRef.current;
+    if (!engine) return;
+    for (const vp of engine.getViewports()) {
+      vp.setCamera({ flipVertical: flipV });
+      vp.render();
+    }
+  }, [flipV]);
+
+  // Apply cine play/stop
+  useEffect(() => {
+    const engine = renderingEngineRef.current;
+    if (!engine) return;
+    for (const vp of engine.getViewports()) {
+      const el = (vp as any).element;
+      if (!el) continue;
+      if (cineEnabled) {
+        csToolsUtilities.cine.playClip(el, { framesPerSecond: 15 });
+      } else {
+        csToolsUtilities.cine.stopClip(el);
+      }
+    }
+  }, [cineEnabled]);
+
+  /** Re-apply active tool + toggle settings after viewport recreation */
+  function applyInitialState() {
+    // Apply active tool (the useEffect for activeTool fires before tool group exists)
+    const toolMap: Record<ActiveToolName, string> = {
+      WindowLevel: WindowLevelTool.toolName,
+      Pan: PanTool.toolName,
+      Zoom: ZoomTool.toolName,
+      Length: LengthTool.toolName,
+      Angle: AngleTool.toolName,
+      EllipticalROI: EllipticalROITool.toolName,
+      Crosshairs: CrosshairsTool.toolName,
+      Rotate: PlanarRotateTool.toolName,
+    };
+    setLeftClickTool(toolMap[activeToolRef.current]);
+
+    // Apply toggles
+    const engine = renderingEngineRef.current;
+    if (!engine) return;
+    const t = togglesRef.current;
+    for (const vp of engine.getViewports()) {
+      if (t.invert) vp.setProperties({ invert: true });
+      if (t.flipH) vp.setCamera({ flipHorizontal: true });
+      if (t.flipV) vp.setCamera({ flipVertical: true });
+      vp.render();
+    }
+    if (t.cine) {
+      for (const vp of engine.getViewports()) {
+        const el = (vp as any).element;
+        if (el) csToolsUtilities.cine.playClip(el, { framesPerSecond: 15 });
+      }
+    }
+  }
 
   function cleanup() {
     for (const fn of eventCleanupsRef.current) fn();
@@ -255,14 +381,19 @@ export default function ViewportGrid({
 
     if (layout === 'mpr') {
       await setupMprViewports(renderingEngine);
-    } else if (orientation === primaryAxis) {
-      setupNativeStackViewport(renderingEngine);
+    } else if (layout === '1x1') {
+      if (orientation === primaryAxis) {
+        setupNativeStackViewport(renderingEngine);
+      } else {
+        await setupReconstructedViewport(renderingEngine);
+      }
     } else {
-      await setupReconstructedViewport(renderingEngine);
+      // Grid layouts: 1x2, 2x1, 2x2
+      setupGridViewports(renderingEngine);
     }
   }
 
-  // Primary axis in stack mode: native StackViewport (best quality)
+  // Primary axis in 1x1 mode: native StackViewport (best quality)
   function setupNativeStackViewport(renderingEngine: RenderingEngine) {
     const element = singleRef.current;
     if (!element) return;
@@ -278,11 +409,12 @@ export default function ViewportGrid({
       bindings: [{ mouseButton: csToolsEnums.MouseBindings.Wheel }],
     });
 
-    const viewport = renderingEngine.getViewport(STACK_VIEWPORT_ID) as Types.IStackViewport;
+    const viewport = renderingEngine.getViewport(STACK_VIEWPORT_ID) as any;
     viewport.setStack(imageIds, 0).then(() => {
       viewport.resetCamera();
       viewport.render();
       updateSingleInfo(STACK_VIEWPORT_ID);
+      applyInitialState();
     });
 
     listenToViewport(element, Enums.Events.STACK_NEW_IMAGE, () => {
@@ -293,7 +425,7 @@ export default function ViewportGrid({
     });
   }
 
-  // Reconstructed axis in stack mode: single VolumeViewport
+  // Reconstructed axis in 1x1 mode: single VolumeViewport
   async function setupReconstructedViewport(renderingEngine: RenderingEngine) {
     const element = singleRef.current;
     if (!element) return;
@@ -320,6 +452,7 @@ export default function ViewportGrid({
     );
 
     renderingEngine.renderViewports([VOLUME_SINGLE_VP_ID]);
+    applyToggles();
 
     listenToViewport(element, Enums.Events.VOLUME_NEW_IMAGE, () => {
       updateSingleInfo(VOLUME_SINGLE_VP_ID);
@@ -328,7 +461,6 @@ export default function ViewportGrid({
       updateSingleInfo(VOLUME_SINGLE_VP_ID);
     });
 
-    // Initial slice info
     updateSingleInfo(VOLUME_SINGLE_VP_ID);
   }
 
@@ -391,6 +523,7 @@ export default function ViewportGrid({
     );
 
     renderingEngine.renderViewports(MPR_VIEWPORT_IDS);
+    applyToggles();
 
     for (let i = 0; i < MPR_VIEWPORT_IDS.length; i++) {
       const vpId = MPR_VIEWPORT_IDS[i];
@@ -420,6 +553,49 @@ export default function ViewportGrid({
     }
   }
 
+  // Grid layouts (1x2, 2x1, 2x2): StackViewports, first has images, rest are empty
+  function setupGridViewports(renderingEngine: RenderingEngine) {
+    const refs = [gridRef0, gridRef1, gridRef2, gridRef3];
+    const count = layout === '2x2' ? 4 : 2;
+    const elements: HTMLDivElement[] = [];
+    const vpIds: string[] = [];
+
+    for (let i = 0; i < count; i++) {
+      const el = refs[i].current;
+      if (!el) continue;
+      elements.push(el);
+      vpIds.push(GRID_VIEWPORT_IDS[i]);
+    }
+
+    if (elements.length === 0) return;
+
+    // Enable all viewport containers
+    for (let i = 0; i < elements.length; i++) {
+      renderingEngine.enableElement({
+        viewportId: vpIds[i],
+        element: elements[i],
+        type: Enums.ViewportType.STACK,
+      });
+    }
+
+    const toolGroup = createToolGroup(vpIds, renderingEngine.id);
+    toolGroup?.setToolActive(StackScrollTool.toolName, {
+      bindings: [{ mouseButton: csToolsEnums.MouseBindings.Wheel }],
+    });
+
+    // Load images only into the first viewport
+    const viewport = renderingEngine.getViewport(vpIds[0]) as any;
+    viewport.setStack(imageIds, 0).then(() => {
+      viewport.resetCamera();
+      viewport.render();
+      updateSingleInfo(vpIds[0]);
+      applyInitialState();
+    });
+
+    listenToViewport(elements[0], Enums.Events.STACK_NEW_IMAGE, () => updateSingleInfo(vpIds[0]));
+    listenToViewport(elements[0], Enums.Events.VOI_MODIFIED, () => updateSingleInfo(vpIds[0]));
+  }
+
   function createToolGroup(viewportIds: string[], renderingEngineId: string) {
     const toolGroup = ToolGroupManager.createToolGroup(TOOL_GROUP_ID);
     if (!toolGroup) return null;
@@ -429,8 +605,12 @@ export default function ViewportGrid({
     toolGroup.addTool(ZoomTool.toolName);
     toolGroup.addTool(StackScrollTool.toolName);
     toolGroup.addTool(LengthTool.toolName);
+    toolGroup.addTool(CrosshairsTool.toolName);
+    toolGroup.addTool(AngleTool.toolName);
+    toolGroup.addTool(EllipticalROITool.toolName);
+    toolGroup.addTool(PlanarRotateTool.toolName);
     toolGroup.addTool(OrientationMarkerTool.toolName);
-    // Set marker type directly on instance via ref (avoids stale closure from useEffect setTimeout)
+    // Set marker type directly on instance via ref
     const markerTool = toolGroup.getToolInstance(OrientationMarkerTool.toolName) as any;
     if (markerTool) {
       markerTool.configuration.overlayMarkerType = MARKER_TYPE_MAP[markerTypeRef.current];
@@ -440,7 +620,7 @@ export default function ViewportGrid({
       toolGroup.addViewport(id, renderingEngineId);
     }
 
-    // Enable AFTER viewports are added — initViewports runs once with all viewports ready
+    // Enable AFTER viewports are added
     toolGroup.setToolEnabled(OrientationMarkerTool.toolName);
 
     return toolGroup;
@@ -450,8 +630,13 @@ export default function ViewportGrid({
     const toolGroup = ToolGroupManager.getToolGroup(TOOL_GROUP_ID);
     if (!toolGroup) return;
 
-    for (const name of [WindowLevelTool.toolName, PanTool.toolName, ZoomTool.toolName, LengthTool.toolName]) {
-      toolGroup.setToolPassive(name);
+    for (const name of ALL_LEFT_CLICK_TOOLS) {
+      // CrosshairsTool crashes in passive mode if annotations aren't initialized
+      if (name === CrosshairsTool.toolName) {
+        toolGroup.setToolDisabled(name);
+      } else {
+        toolGroup.setToolPassive(name);
+      }
     }
 
     // Active tool on left click
@@ -464,7 +649,7 @@ export default function ViewportGrid({
       toolGroup.setToolActive(ZoomTool.toolName, {
         bindings: [
           { mouseButton: csToolsEnums.MouseBindings.Secondary },
-          { numTouchPoints: 2 },  // pinch-to-zoom on trackpad/touch
+          { numTouchPoints: 2 },
         ],
       });
     }
@@ -472,7 +657,7 @@ export default function ViewportGrid({
       toolGroup.setToolActive(PanTool.toolName, {
         bindings: [
           { mouseButton: csToolsEnums.MouseBindings.Auxiliary },
-          { numTouchPoints: 3 },  // three-finger drag to pan
+          { numTouchPoints: 3 },
         ],
       });
     }
@@ -484,11 +669,15 @@ export default function ViewportGrid({
       Pan: PanTool.toolName,
       Zoom: ZoomTool.toolName,
       Length: LengthTool.toolName,
+      Angle: AngleTool.toolName,
+      EllipticalROI: EllipticalROITool.toolName,
+      Crosshairs: CrosshairsTool.toolName,
+      Rotate: PlanarRotateTool.toolName,
     };
     setLeftClickTool(toolMap[activeTool]);
   }, [activeTool, setLeftClickTool]);
 
-  // Switch orientation marker type at runtime (no viewport recreation)
+  // Switch orientation marker type at runtime
   useEffect(() => {
     const toolGroup = ToolGroupManager.getToolGroup(TOOL_GROUP_ID);
     if (!toolGroup) return;
@@ -497,7 +686,6 @@ export default function ViewportGrid({
     const engine = renderingEngineRef.current;
     if (!engine) return;
     tool.configuration.overlayMarkerType = MARKER_TYPE_MAP[orientationMarkerType];
-    // addAxisActorInViewport properly removes old actor from renderer before adding new one
     for (const vp of engine.getViewports()) {
       try {
         tool.updatingOrientationMarker[vp.id] = false;
@@ -509,6 +697,7 @@ export default function ViewportGrid({
   // Capitalize first letter for label
   const orientationLabel = orientation.charAt(0).toUpperCase() + orientation.slice(1);
   const isReconstructed = orientation !== primaryAxis;
+  const isGridLayout = layout === '1x2' || layout === '2x1' || layout === '2x2';
 
   if (layout === 'mpr') {
     return (
@@ -531,6 +720,35 @@ export default function ViewportGrid({
         <div className="bg-neutral-900 flex items-center justify-center">
           <span className="text-xs text-neutral-600">3D view (coming soon)</span>
         </div>
+      </div>
+    );
+  }
+
+  if (isGridLayout) {
+    const count = layout === '2x2' ? 4 : 2;
+    const gridClass =
+      layout === '1x2' ? 'grid-cols-2 grid-rows-1'
+      : layout === '2x1' ? 'grid-cols-1 grid-rows-2'
+      : 'grid-cols-2 grid-rows-2';
+    const refs = [gridRef0, gridRef1, gridRef2, gridRef3];
+
+    return (
+      <div
+        className={`w-full h-full grid ${gridClass} gap-px bg-neutral-800`}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        {Array.from({ length: count }).map((_, i) => (
+          <div key={i} className="relative bg-black overflow-hidden">
+            <div ref={refs[i]} className="absolute inset-0" />
+            {i === 0 ? (
+              <ViewportOverlay label={orientationLabel} info={singleInfo} />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <span className="text-xs text-neutral-600">Drop series here</span>
+              </div>
+            )}
+          </div>
+        ))}
       </div>
     );
   }

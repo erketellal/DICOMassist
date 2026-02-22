@@ -36,7 +36,7 @@ export default function App() {
   const [primaryAxis, setPrimaryAxis] = useState<AnatomicalPlane>('axial');
   const [orientation, setOrientation] = useState<AnatomicalPlane>('axial');
   const [activeTool, setActiveTool] = useState<ActiveToolName>('WindowLevel');
-  const [layout, setLayout] = useState<LayoutType>('stack');
+  const [layout, setLayout] = useState<LayoutType>('1x1');
   const [orientationMarkerType, setOrientationMarkerType] = useState<OrientationMarkerType>('cube');
   const [prefetchProgress, setPrefetchProgress] = useState({ loaded: 0, total: 0 });
   const [studyMetadata, setStudyMetadata] = useState<StudyMetadata | null>(null);
@@ -46,6 +46,10 @@ export default function App() {
   const [providerConfig, setProviderConfig] = useState<ProviderConfig>(loadConfig);
   const [showSeriesBrowser, setShowSeriesBrowser] = useState(false);
   const [activeSeriesUID, setActiveSeriesUID] = useState<string>('');
+  const [invert, setInvert] = useState(false);
+  const [flipH, setFlipH] = useState(false);
+  const [flipV, setFlipV] = useState(false);
+  const [cineEnabled, setCineEnabled] = useState(false);
   const resetRef = useRef<(() => void) | null>(null);
   const chatSidebarRef = useRef<ChatSidebarHandle>(null);
 
@@ -219,8 +223,19 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [imageIds.length, studyMetadata, settingsOpen, status, cancelPlan]);
 
+  // Fall back to W/L if leaving MPR while Crosshairs is active
+  useEffect(() => {
+    if (layout !== 'mpr' && activeTool === 'Crosshairs') {
+      setActiveTool('WindowLevel');
+    }
+  }, [layout, activeTool]);
+
   const handleReset = useCallback(() => {
     resetRef.current?.();
+    setInvert(false);
+    setFlipH(false);
+    setFlipV(false);
+    setCineEnabled(false);
   }, []);
 
   const handleConfigChange = useCallback((config: ProviderConfig) => {
@@ -283,7 +298,7 @@ export default function App() {
       const plane = targetSeries.anatomicalPlane === 'oblique' ? 'axial' : targetSeries.anatomicalPlane;
       setPrimaryAxis(plane);
       setOrientation(plane);
-      setLayout('stack');
+      setLayout('1x1');
       return; // scrollToSlice will be called by the effect below once images load
     }
 
@@ -391,7 +406,7 @@ export default function App() {
     const plane = series.anatomicalPlane === 'oblique' ? 'axial' : series.anatomicalPlane;
     setPrimaryAxis(plane);
     setOrientation(plane);
-    setLayout('stack');
+    setLayout('1x1');
   }, [studyMetadata, activeSeriesUID]);
 
   if (!ready) {
@@ -413,9 +428,6 @@ export default function App() {
         onToolChange={setActiveTool}
         layout={layout}
         onLayoutChange={setLayout}
-        orientation={orientation}
-        onOrientationChange={setOrientation}
-        primaryAxis={primaryAxis}
         onReset={handleReset}
         showSeriesBrowser={showSeriesBrowser}
         onToggleSeriesBrowser={studyMetadata && studyMetadata.series.length > 1 ? () => setShowSeriesBrowser((v) => !v) : undefined}
@@ -429,6 +441,14 @@ export default function App() {
         onOpenSettings={() => setSettingsOpen((v) => !v)}
         orientationMarkerType={orientationMarkerType}
         onOrientationMarkerTypeChange={setOrientationMarkerType}
+        invert={invert}
+        onInvertToggle={() => setInvert((v) => !v)}
+        flipH={flipH}
+        onFlipHToggle={() => setFlipH((v) => !v)}
+        flipV={flipV}
+        onFlipVToggle={() => setFlipV((v) => !v)}
+        cineEnabled={cineEnabled}
+        onCineToggle={() => setCineEnabled((v) => !v)}
       />
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {showSeriesBrowser && studyMetadata && studyMetadata.series.length > 1 && (
@@ -449,6 +469,10 @@ export default function App() {
               primaryAxis={primaryAxis}
               orientationMarkerType={orientationMarkerType}
               onResetRef={resetRef}
+              invert={invert}
+              flipH={flipH}
+              flipV={flipV}
+              cineEnabled={cineEnabled}
             />
           </div>
           <LoadingOverlay
