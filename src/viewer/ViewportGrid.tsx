@@ -5,6 +5,7 @@ import {
   volumeLoader,
   setVolumesForViewports,
   cache,
+  utilities as csCoreUtilities,
 } from '@cornerstonejs/core';
 import {
   addTool,
@@ -123,6 +124,60 @@ function ViewportOverlay({ label, info }: { label: string; info: ViewportInfo })
         </div>
       )}
     </>
+  );
+}
+
+function SliceSlider({ current, total, onChange }: {
+  current: number;
+  total: number;
+  onChange: (index: number) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+
+  if (total <= 1) return null;
+
+  const pct = (current / (total - 1)) * 100;
+
+  function indexFromY(clientY: number) {
+    const track = trackRef.current;
+    if (!track) return current;
+    const rect = track.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+    return Math.round(ratio * (total - 1));
+  }
+
+  function handlePointerDown(e: React.PointerEvent) {
+    dragging.current = true;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    onChange(indexFromY(e.clientY));
+  }
+
+  function handlePointerMove(e: React.PointerEvent) {
+    if (!dragging.current) return;
+    onChange(indexFromY(e.clientY));
+  }
+
+  function handlePointerUp() {
+    dragging.current = false;
+  }
+
+  return (
+    <div
+      ref={trackRef}
+      className="w-5 shrink-0 flex items-center justify-center bg-neutral-900 cursor-pointer select-none"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+    >
+      <div className="relative w-1 h-full rounded-full bg-neutral-700">
+        <div
+          className="absolute left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-blue-500 shadow"
+          style={{ top: `calc(${pct}% - 6px)` }}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -715,6 +770,53 @@ export default function ViewportGrid({
     }
   }, [orientationMarkerType]);
 
+  // Throttle trackpad scroll (trackpads fire many events per gesture)
+  useEffect(() => {
+    const elements = [
+      singleRef.current, axialRef.current, sagittalRef.current, coronalRef.current,
+      gridRef0.current, gridRef1.current, gridRef2.current, gridRef3.current,
+    ].filter(Boolean) as HTMLDivElement[];
+    if (elements.length === 0) return;
+
+    let lastScrollTime = 0;
+    function throttleWheel(e: WheelEvent) {
+      if (e.ctrlKey || e.metaKey) return;
+      const now = Date.now();
+      if (now - lastScrollTime < 50) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        return;
+      }
+      lastScrollTime = now;
+    }
+
+    for (const el of elements) {
+      el.addEventListener('wheel', throttleWheel, { capture: true, passive: false });
+    }
+    return () => {
+      for (const el of elements) {
+        el.removeEventListener('wheel', throttleWheel, { capture: true } as EventListenerOptions);
+      }
+    };
+  }, [layout]);
+
+  const handleSliceChange = useCallback((viewportId: string, index: number) => {
+    const engine = renderingEngineRef.current;
+    if (!engine) return;
+    const vp = engine.getViewport(viewportId);
+    if (!vp) return;
+    const current = vp.getSliceIndex();
+    const delta = index - current;
+    if (delta === 0) return;
+    if ('setImageIdIndex' in vp && typeof (vp as any).setImageIdIndex === 'function') {
+      (vp as any).setImageIdIndex(index);
+    } else {
+      csCoreUtilities.scroll(vp, { delta });
+    }
+    vp.render();
+    updateSingleInfo(viewportId);
+  }, []);
+
   // Capitalize first letter for label
   const orientationLabel = orientation.charAt(0).toUpperCase() + orientation.slice(1);
   const isReconstructed = orientation !== primaryAxis;
@@ -726,17 +828,26 @@ export default function ViewportGrid({
         className="w-full h-full grid grid-cols-2 grid-rows-2 gap-px bg-neutral-800"
         onContextMenu={(e) => e.preventDefault()}
       >
-        <div className="relative bg-black overflow-hidden">
-          <div ref={axialRef} className="absolute inset-0" />
-          <ViewportOverlay label="Axial" info={mprInfo.CT_AXIAL} />
+        <div className="flex overflow-hidden">
+          <SliceSlider current={mprInfo.CT_AXIAL.current} total={mprInfo.CT_AXIAL.total} onChange={(idx) => handleSliceChange(MPR_VIEWPORT_IDS[0], idx)} />
+          <div className="relative flex-1 min-w-0 bg-black">
+            <div ref={axialRef} className="absolute inset-0" />
+            <ViewportOverlay label="Axial" info={mprInfo.CT_AXIAL} />
+          </div>
         </div>
-        <div className="relative bg-black overflow-hidden">
-          <div ref={sagittalRef} className="absolute inset-0" />
-          <ViewportOverlay label="Sagittal" info={mprInfo.CT_SAGITTAL} />
+        <div className="flex overflow-hidden">
+          <SliceSlider current={mprInfo.CT_SAGITTAL.current} total={mprInfo.CT_SAGITTAL.total} onChange={(idx) => handleSliceChange(MPR_VIEWPORT_IDS[1], idx)} />
+          <div className="relative flex-1 min-w-0 bg-black">
+            <div ref={sagittalRef} className="absolute inset-0" />
+            <ViewportOverlay label="Sagittal" info={mprInfo.CT_SAGITTAL} />
+          </div>
         </div>
-        <div className="relative bg-black overflow-hidden">
-          <div ref={coronalRef} className="absolute inset-0" />
-          <ViewportOverlay label="Coronal" info={mprInfo.CT_CORONAL} />
+        <div className="flex overflow-hidden">
+          <SliceSlider current={mprInfo.CT_CORONAL.current} total={mprInfo.CT_CORONAL.total} onChange={(idx) => handleSliceChange(MPR_VIEWPORT_IDS[2], idx)} />
+          <div className="relative flex-1 min-w-0 bg-black">
+            <div ref={coronalRef} className="absolute inset-0" />
+            <ViewportOverlay label="Coronal" info={mprInfo.CT_CORONAL} />
+          </div>
         </div>
         <div className="bg-neutral-900 flex items-center justify-center">
           <span className="text-xs text-neutral-600">3D view (coming soon)</span>
@@ -759,28 +870,36 @@ export default function ViewportGrid({
         onContextMenu={(e) => e.preventDefault()}
       >
         {Array.from({ length: count }).map((_, i) => (
-          <div key={i} className="relative bg-black overflow-hidden">
-            <div ref={refs[i]} className="absolute inset-0" />
-            {i === 0 ? (
-              <ViewportOverlay label={orientationLabel} info={singleInfo} />
-            ) : (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <span className="text-xs text-neutral-600">Drop series here</span>
-              </div>
-            )}
+          <div key={i} className="flex overflow-hidden">
+            {i === 0 && <SliceSlider current={singleInfo.current} total={singleInfo.total} onChange={(idx) => handleSliceChange(GRID_VIEWPORT_IDS[0], idx)} />}
+            <div className="relative flex-1 min-w-0 bg-black">
+              <div ref={refs[i]} className="absolute inset-0" />
+              {i === 0 ? (
+                <ViewportOverlay label={orientationLabel} info={singleInfo} />
+              ) : (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <span className="text-xs text-neutral-600">Drop series here</span>
+                </div>
+              )}
+            </div>
           </div>
         ))}
       </div>
     );
   }
 
+  const singleVpId = orientation === primaryAxis ? STACK_VIEWPORT_ID : VOLUME_SINGLE_VP_ID;
+
   return (
-    <div className="relative bg-black overflow-hidden w-full h-full" onContextMenu={(e) => e.preventDefault()}>
-      <div ref={singleRef} className="absolute inset-0" />
-      <ViewportOverlay
-        label={`${orientationLabel}${isReconstructed ? ' (recon)' : ''}`}
-        info={singleInfo}
-      />
+    <div className="flex w-full h-full" onContextMenu={(e) => e.preventDefault()}>
+      <SliceSlider current={singleInfo.current} total={singleInfo.total} onChange={(idx) => handleSliceChange(singleVpId, idx)} />
+      <div className="relative flex-1 min-w-0 bg-black overflow-hidden">
+        <div ref={singleRef} className="absolute inset-0" />
+        <ViewportOverlay
+          label={`${orientationLabel}${isReconstructed ? ' (recon)' : ''}`}
+          info={singleInfo}
+        />
+      </div>
     </div>
   );
 }
