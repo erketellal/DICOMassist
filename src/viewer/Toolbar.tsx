@@ -9,7 +9,6 @@ import {
   Grid2x2,
   Info,
   Search,
-  MessageSquare,
   Settings,
   Compass,
   Layers,
@@ -31,8 +30,6 @@ interface ToolbarProps {
   onToggleSeriesBrowser?: () => void;
   showMetadata?: boolean;
   onToggleMetadata?: () => void;
-  showChat?: boolean;
-  onToggleChat?: () => void;
   onOpenSpotlight?: () => void;
   onOpenSettings?: () => void;
   orientationMarkerType?: OrientationMarkerType;
@@ -71,7 +68,6 @@ export default function Toolbar({
   onReset,
   showSeriesBrowser, onToggleSeriesBrowser,
   showMetadata, onToggleMetadata,
-  showChat, onToggleChat,
   onOpenSpotlight, onOpenSettings,
   orientationMarkerType = 'cube', onOrientationMarkerTypeChange,
 }: ToolbarProps) {
@@ -111,6 +107,21 @@ export default function Toolbar({
 
   return (
     <div className="flex items-center gap-1 px-3 py-2 bg-neutral-900 border-b border-neutral-800">
+      {/* Series browser toggle — far left */}
+      {onToggleSeriesBrowser && (
+        <>
+          <button
+            onClick={onToggleSeriesBrowser}
+            title="Series browser"
+            className={btnClass(showSeriesBrowser)}
+          >
+            <Layers className="w-5 h-5" />
+            <span className="hidden sm:inline">Series</span>
+          </button>
+          <div className="w-px h-6 bg-neutral-700 mx-1" />
+        </>
+      )}
+
       {tools.map((tool) => (
         <button
           key={tool.name}
@@ -133,21 +144,6 @@ export default function Toolbar({
         <RotateCcw className="w-5 h-5" />
         <span className="hidden sm:inline">Reset</span>
       </button>
-
-      {/* Series browser toggle */}
-      {onToggleSeriesBrowser && (
-        <>
-          <div className="w-px h-6 bg-neutral-700 mx-1" />
-          <button
-            onClick={onToggleSeriesBrowser}
-            title="Series browser"
-            className={btnClass(showSeriesBrowser)}
-          >
-            <Layers className="w-5 h-5" />
-            <span className="hidden sm:inline">Series</span>
-          </button>
-        </>
-      )}
 
       <div className="w-px h-6 bg-neutral-700 mx-1" />
 
@@ -259,18 +255,6 @@ export default function Toolbar({
         </button>
       )}
 
-      {/* Chat toggle */}
-      {onToggleChat && (
-        <button
-          onClick={onToggleChat}
-          title="Chat (Cmd+B)"
-          className={btnClass(showChat)}
-        >
-          <MessageSquare className="w-5 h-5" />
-          <span className="hidden sm:inline">Chat</span>
-        </button>
-      )}
-
       {/* Study Info toggle */}
       {onToggleMetadata && (
         <button
@@ -279,7 +263,6 @@ export default function Toolbar({
           className={btnClass(showMetadata)}
         >
           <Info className="w-5 h-5" />
-          <span className="hidden sm:inline">Info</span>
         </button>
       )}
 

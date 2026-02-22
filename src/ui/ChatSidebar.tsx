@@ -1,9 +1,15 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { X, Send, Trash2, AlertCircle, Loader2 } from 'lucide-react';
-import type { ChatMessage } from '../llm/types';
+import type { ChatMessage, SelectionPlan } from '../llm/types';
+import type { StudyMetadata } from '../dicom/types';
 import type { ChatStatus, PipelineState, SliceMapping } from '../llm/useLLMChat';
 import PipelineView from './PipelineView';
 import AssistantMessage from './AssistantMessage';
+import PlanPreviewCard from './PlanPreviewCard';
+
+export interface ChatSidebarHandle {
+  focusInput: () => void;
+}
 
 interface ChatSidebarProps {
   messages: ChatMessage[];
@@ -11,36 +17,57 @@ interface ChatSidebarProps {
   statusText: string;
   error: string | null;
   pipeline: PipelineState | null;
+  currentPlan: SelectionPlan | null;
+  studyMetadata: StudyMetadata | null;
+  onConfirmPlan: (plan: SelectionPlan) => void;
+  onCancelPlan: () => void;
+  onStartAnalysis: (hint: string) => void;
   onSendFollowUp: (text: string) => void;
   onClear: () => void;
   onClose: () => void;
   onNavigateToSlice: (mapping: SliceMapping) => void;
 }
 
-export default function ChatSidebar({
+export default forwardRef<ChatSidebarHandle, ChatSidebarProps>(function ChatSidebar({
   messages,
   status,
   statusText,
   error,
   pipeline,
+  currentPlan,
+  studyMetadata,
+  onConfirmPlan,
+  onCancelPlan,
+  onStartAnalysis,
   onSendFollowUp,
   onClear,
   onClose,
   onNavigateToSlice,
-}: ChatSidebarProps) {
+}, ref) {
   const [input, setInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const busy = status !== 'idle' && status !== 'error' && status !== 'awaiting-confirmation';
 
+  useImperativeHandle(ref, () => ({
+    focusInput: () => inputRef.current?.focus(),
+  }));
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, status, pipeline]);
+  }, [messages, status, pipeline, currentPlan]);
 
   const handleSend = () => {
     const trimmed = input.trim();
     if (!trimmed || busy) return;
-    onSendFollowUp(trimmed);
+
+    if (messages.length === 0) {
+      // No conversation yet — start a new analysis
+      onStartAnalysis(trimmed);
+    } else {
+      // Existing conversation — send as follow-up
+      onSendFollowUp(trimmed);
+    }
     setInput('');
   };
 
@@ -80,7 +107,7 @@ export default function ChatSidebar({
         {messages.length === 0 && !busy && !pipeline && (
           <div className="text-center text-neutral-500 text-xs mt-8">
             <p>No analysis yet.</p>
-            <p className="mt-1">Press <kbd className="bg-neutral-700 px-1 rounded">Cmd+K</kbd> to start.</p>
+            <p className="mt-1">Describe the clinical context below to start.</p>
           </div>
         )}
 
@@ -101,6 +128,16 @@ export default function ChatSidebar({
             </div>
           );
         })}
+
+        {/* Plan preview card — inline, only during awaiting-confirmation */}
+        {status === 'awaiting-confirmation' && currentPlan && studyMetadata && (
+          <PlanPreviewCard
+            plan={currentPlan}
+            metadata={studyMetadata}
+            onAccept={onConfirmPlan}
+            onCancel={onCancelPlan}
+          />
+        )}
 
         {busy && statusText && status === 'following-up' && (
           <div className="flex items-center gap-2 text-xs text-blue-400">
@@ -132,13 +169,13 @@ export default function ChatSidebar({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={messages.length > 0 ? 'Ask a follow-up...' : 'Use Cmd+K to start analysis'}
-            disabled={busy || messages.length === 0}
+            placeholder={messages.length > 0 ? 'Ask a follow-up...' : 'Describe clinical context...'}
+            disabled={busy}
             className="flex-1 bg-transparent text-sm text-neutral-100 placeholder-neutral-500 outline-none disabled:opacity-50"
           />
           <button
             onClick={handleSend}
-            disabled={busy || !input.trim() || messages.length === 0}
+            disabled={busy || !input.trim()}
             className="p-1 rounded text-neutral-400 hover:text-blue-400 disabled:opacity-30 disabled:hover:text-neutral-400"
           >
             <Send className="w-4 h-4" />
@@ -147,7 +184,7 @@ export default function ChatSidebar({
       </div>
     </div>
   );
-}
+});
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   if (message.role === 'user') {

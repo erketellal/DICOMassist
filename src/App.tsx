@@ -8,9 +8,7 @@ import Toolbar from './viewer/Toolbar';
 import LoadingOverlay from './viewer/LoadingOverlay';
 import MetadataPanel from './ui/MetadataPanel';
 import SeriesBrowser from './ui/SeriesBrowser';
-import SpotlightPrompt from './ui/SpotlightPrompt';
-import ChatSidebar from './ui/ChatSidebar';
-import PlanPreviewModal from './ui/PlanPreviewModal';
+import ChatSidebar, { type ChatSidebarHandle } from './ui/ChatSidebar';
 import SettingsPanel from './ui/SettingsPanel';
 import type { AnatomicalPlane } from './dicom/orientationUtils';
 import type { StudyMetadata } from './dicom/types';
@@ -44,12 +42,12 @@ export default function App() {
   const [studyMetadata, setStudyMetadata] = useState<StudyMetadata | null>(null);
   const [showMetadata, setShowMetadata] = useState(false);
   const [showChat, setShowChat] = useState(false);
-  const [spotlightOpen, setSpotlightOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [providerConfig, setProviderConfig] = useState<ProviderConfig>(loadConfig);
   const [showSeriesBrowser, setShowSeriesBrowser] = useState(false);
   const [activeSeriesUID, setActiveSeriesUID] = useState<string>('');
   const resetRef = useRef<(() => void) | null>(null);
+  const chatSidebarRef = useRef<ChatSidebarHandle>(null);
 
   const {
     messages,
@@ -178,10 +176,11 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [currentPlan, studyMetadata]); // intentionally omitting imageIds to avoid loop
 
-  // Close spotlight when plan preview modal opens
+  // When plan arrives, ensure sidebar is open
   useEffect(() => {
     if (status === 'awaiting-confirmation') {
-      setSpotlightOpen(false);
+      setShowChat(true);
+      setShowMetadata(false);
     }
   }, [status]);
 
@@ -189,7 +188,6 @@ export default function App() {
   useEffect(() => {
     if (messages.length > 0 && status === 'idle') {
       setShowChat(true);
-      setSpotlightOpen(false);
     }
   }, [messages.length, status]);
 
@@ -201,20 +199,16 @@ export default function App() {
       if (mod && e.key === 'k') {
         e.preventDefault();
         if (imageIds.length > 0 && studyMetadata) {
-          setSpotlightOpen(true);
+          setShowChat(true);
+          setShowMetadata(false);
+          // Focus the input after the sidebar renders
+          requestAnimationFrame(() => chatSidebarRef.current?.focusInput());
         }
-      }
-
-      if (mod && e.key === 'b') {
-        e.preventDefault();
-        setShowChat((v) => !v);
       }
 
       if (e.key === 'Escape') {
         if (status === 'awaiting-confirmation') {
           cancelPlan();
-        } else if (spotlightOpen) {
-          setSpotlightOpen(false);
         } else if (settingsOpen) {
           setSettingsOpen(false);
         }
@@ -223,7 +217,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [imageIds.length, studyMetadata, spotlightOpen, settingsOpen, status, cancelPlan]);
+  }, [imageIds.length, studyMetadata, settingsOpen, status, cancelPlan]);
 
   const handleReset = useCallback(() => {
     resetRef.current?.();
@@ -234,7 +228,7 @@ export default function App() {
     saveConfig(config);
   }, []);
 
-  const handleSpotlightSubmit = useCallback((hint: string) => {
+  const handleStartAnalysis = useCallback((hint: string) => {
     // Capture current viewport position as context for slice selection
     let viewportContext: ViewportContext | undefined;
     try {
@@ -380,14 +374,6 @@ export default function App() {
     }
   }
 
-  // Show chat or metadata panel (mutual exclusion)
-  const handleToggleChat = useCallback(() => {
-    setShowChat((v) => {
-      if (!v) setShowMetadata(false);
-      return !v;
-    });
-  }, []);
-
   const handleToggleMetadata = useCallback(() => {
     if (!studyMetadata) return;
     setShowMetadata((v) => {
@@ -435,9 +421,11 @@ export default function App() {
         onToggleSeriesBrowser={studyMetadata && studyMetadata.series.length > 1 ? () => setShowSeriesBrowser((v) => !v) : undefined}
         showMetadata={showMetadata}
         onToggleMetadata={studyMetadata ? handleToggleMetadata : undefined}
-        showChat={showChat}
-        onToggleChat={handleToggleChat}
-        onOpenSpotlight={() => setSpotlightOpen(true)}
+        onOpenSpotlight={() => {
+          setShowChat(true);
+          setShowMetadata(false);
+          requestAnimationFrame(() => chatSidebarRef.current?.focusInput());
+        }}
         onOpenSettings={() => setSettingsOpen((v) => !v)}
         orientationMarkerType={orientationMarkerType}
         onOrientationMarkerTypeChange={setOrientationMarkerType}
@@ -477,11 +465,17 @@ export default function App() {
         )}
         {showChat && (
           <ChatSidebar
+            ref={chatSidebarRef}
             messages={messages}
             status={status}
             statusText={statusText}
             error={error}
             pipeline={pipeline}
+            currentPlan={currentPlan}
+            studyMetadata={studyMetadata}
+            onConfirmPlan={confirmPlan}
+            onCancelPlan={cancelPlan}
+            onStartAnalysis={handleStartAnalysis}
             onSendFollowUp={sendFollowUp}
             onClear={clearChat}
             onClose={() => setShowChat(false)}
@@ -491,22 +485,6 @@ export default function App() {
       </div>
 
       {/* Overlays */}
-      <SpotlightPrompt
-        open={spotlightOpen}
-        onClose={() => setSpotlightOpen(false)}
-        onSubmit={handleSpotlightSubmit}
-        status={status}
-        statusText={statusText}
-      />
-      {status === 'awaiting-confirmation' && currentPlan && studyMetadata && (
-        <PlanPreviewModal
-          open
-          plan={currentPlan}
-          metadata={studyMetadata}
-          onAccept={confirmPlan}
-          onCancel={cancelPlan}
-        />
-      )}
       <SettingsPanel
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
