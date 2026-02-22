@@ -157,9 +157,21 @@ export default function ViewportGrid({
     CT_CORONAL: { current: 0, total: 0, ww: 0, wc: 0 },
   });
 
-  // Set up rendering engine + viewports
+  // Create rendering engine once on mount — avoids WebGL context leaks
   useEffect(() => {
     registerTools();
+    renderingEngineRef.current = new RenderingEngine(RENDERING_ENGINE_ID);
+    return () => {
+      teardownViewports();
+      renderingEngineRef.current?.destroy();
+      renderingEngineRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Set up viewports when layout/data changes (reuses the single engine)
+  useEffect(() => {
+    if (!renderingEngineRef.current || imageIds.length === 0) return;
 
     const timer = setTimeout(() => {
       setupViewports();
@@ -167,7 +179,7 @@ export default function ViewportGrid({
 
     return () => {
       clearTimeout(timer);
-      cleanup();
+      teardownViewports();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout, imageIds, orientation, primaryAxis]);
@@ -333,11 +345,12 @@ export default function ViewportGrid({
     }
   }
 
-  function cleanup() {
+  /** Teardown viewports + tool group but keep the rendering engine alive */
+  function teardownViewports() {
     for (const fn of eventCleanupsRef.current) fn();
     eventCleanupsRef.current = [];
 
-    // Remove orientation marker actors from renderers before destroying
+    // Remove orientation marker actors before disabling viewports
     const toolGroup = ToolGroupManager.getToolGroup(TOOL_GROUP_ID);
     if (toolGroup) {
       try {
@@ -361,8 +374,16 @@ export default function ViewportGrid({
     }
 
     ToolGroupManager.destroyToolGroup(TOOL_GROUP_ID);
-    renderingEngineRef.current?.destroy();
-    renderingEngineRef.current = null;
+
+    // Disable viewports (releases WebGL contexts) but keep engine alive
+    const engine = renderingEngineRef.current;
+    if (engine) {
+      const vpIds = engine.getViewports().map((vp) => vp.id);
+      for (const id of vpIds) {
+        try { engine.disableElement(id); } catch { /* ok */ }
+      }
+    }
+
     if (cache.getVolume(VOLUME_ID)) {
       cache.removeVolumeLoadObject(VOLUME_ID);
     }
@@ -376,8 +397,8 @@ export default function ViewportGrid({
   async function setupViewports() {
     if (imageIds.length === 0) return;
 
-    const renderingEngine = new RenderingEngine(RENDERING_ENGINE_ID);
-    renderingEngineRef.current = renderingEngine;
+    const renderingEngine = renderingEngineRef.current;
+    if (!renderingEngine) return;
 
     if (layout === 'mpr') {
       await setupMprViewports(renderingEngine);
