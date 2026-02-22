@@ -39,6 +39,7 @@ DICOMassist uses a **two-call architecture** to intelligently filter slices:
 ## Features
 
 - **DICOM Viewer**: Cornerstone3D v4 with stack and MPR layouts, standard tools (W/L, Zoom, Pan, Length, Scroll)
+- **Multi-Viewport Grid**: 1x2, 2x1, and 2x2 grid layouts with per-slot series selection from a series browser
 - **Orientation Markers**: Switchable 3D orientation indicators (Annotated Cube with L/R/A/P/S/I labels, Axes, or Human Model) in the viewport corner
 - **Drag-and-Drop Loading**: Drop a DICOM folder, progressive loading with prefetch progress
 - **Metadata Extraction**: Automatic extraction of study, series, and per-slice spatial metadata
@@ -68,7 +69,7 @@ DICOMassist uses a **two-call architecture** to intelligently filter slices:
 ### Setup
 
 ```bash
-git clone https://github.com/yourusername/DICOMassist.git
+git clone https://github.com/erketellal/DICOMassist.git
 cd DICOMassist
 npm install
 npm run dev
@@ -121,7 +122,9 @@ For testing, download from [TCIA — LDCT and Projection Data](https://www.cance
 src/
 ├── viewer/                    # Cornerstone3D setup and viewport management
 │   ├── CornerstoneInit.ts     # One-time init of core + tools + imageLoader
-│   ├── ViewportGrid.tsx       # Stack + MPR viewport layouts
+│   ├── ViewportGrid.tsx       # Stack, MPR, and grid viewport layouts
+│   ├── viewportUtils.ts       # Shared viewport info extraction helpers
+│   ├── EmptyViewportOverlay.tsx # Series picker for empty grid slots
 │   ├── Toolbar.tsx            # Tool buttons and layout controls
 │   ├── DicomDropZone.tsx      # Drag-and-drop DICOM loading
 │   └── LoadingOverlay.tsx     # Prefetch progress indicator
@@ -142,13 +145,24 @@ src/
 │   ├── SpotlightPrompt.tsx    # Cmd+K overlay prompt input
 │   ├── ChatSidebar.tsx        # Chat history and follow-up input
 │   ├── PipelineView.tsx       # Pipeline step visualization
+│   ├── PlanPreviewCard.tsx    # Selection plan summary card
 │   ├── AssistantMessage.tsx   # Formatted LLM response with interactive slice refs
+│   ├── SeriesBrowser.tsx      # Series list for grid slot selection
 │   ├── MetadataPanel.tsx      # DICOM metadata summary panel
 │   └── SettingsPanel.tsx      # LLM provider configuration
 ├── utils/
 │   └── logger.ts              # Dev-gated console logging
 ├── App.tsx                    # Root component, viewport context, keyboard shortcuts
 └── main.tsx                   # Entry point
+```
+
+## Deployment
+
+The app is deployed on Vercel: [dicomassist.vercel.app](https://dicomassist.vercel.app)
+
+To deploy your own instance:
+```bash
+npx vercel --prod
 ```
 
 ## License

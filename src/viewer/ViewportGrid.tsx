@@ -26,6 +26,8 @@ import {
 import type { AnatomicalPlane } from '../dicom/orientationUtils';
 import type { StudyMetadata } from '../dicom/types';
 import EmptyViewportOverlay from './EmptyViewportOverlay';
+import { extractViewportInfo } from './viewportUtils';
+import type { ViewportInfo } from './viewportUtils';
 
 const RENDERING_ENGINE_ID = 'dicomRenderingEngine';
 const TOOL_GROUP_ID = 'mainTools';
@@ -82,13 +84,6 @@ const ALL_LEFT_CLICK_TOOLS = [
   CrosshairsTool.toolName,
   PlanarRotateTool.toolName,
 ];
-
-interface ViewportInfo {
-  current: number;
-  total: number;
-  ww: number;
-  wc: number;
-}
 
 interface ViewportGridProps {
   imageIds: string[];
@@ -562,16 +557,7 @@ export default function ViewportGrid({
   function updateSingleInfo(viewportId: string) {
     const vp = renderingEngineRef.current?.getViewport(viewportId);
     if (!vp) return;
-    const props = vp.getProperties() as any;
-    const { lower, upper } = props?.voiRange ?? { lower: 0, upper: 0 };
-    const ww = upper - lower;
-    const wc = lower + ww / 2;
-    setSingleInfo({
-      current: vp.getSliceIndex(),
-      total: vp.getNumberOfSlices(),
-      ww,
-      wc,
-    });
+    setSingleInfo(extractViewportInfo(vp));
   }
 
   async function setupMprViewports(renderingEngine: RenderingEngine) {
@@ -628,19 +614,7 @@ export default function ViewportGrid({
       const updateVpInfo = () => {
         const vp = renderingEngineRef.current?.getViewport(vpId);
         if (!vp) return;
-        const props = vp.getProperties() as any;
-        const { lower, upper } = props?.voiRange ?? { lower: 0, upper: 0 };
-        const ww = upper - lower;
-        const wc = lower + ww / 2;
-        setMprInfo((prev) => ({
-          ...prev,
-          [vpId]: {
-            current: vp.getSliceIndex(),
-            total: vp.getNumberOfSlices(),
-            ww,
-            wc,
-          },
-        }));
+        setMprInfo((prev) => ({ ...prev, [vpId]: extractViewportInfo(vp) }));
       };
 
       listenToViewport(el, Enums.Events.VOLUME_NEW_IMAGE, updateVpInfo);
@@ -728,19 +702,7 @@ export default function ViewportGrid({
   function updateGridSlotInfo(slotIndex: number, viewportId: string) {
     const vp = renderingEngineRef.current?.getViewport(viewportId);
     if (!vp) return;
-    const props = vp.getProperties() as any;
-    const { lower, upper } = props?.voiRange ?? { lower: 0, upper: 0 };
-    const ww = upper - lower;
-    const wc = lower + ww / 2;
-    setGridInfo((prev) => ({
-      ...prev,
-      [slotIndex]: {
-        current: vp.getSliceIndex(),
-        total: vp.getNumberOfSlices(),
-        ww,
-        wc,
-      },
-    }));
+    setGridInfo((prev) => ({ ...prev, [slotIndex]: extractViewportInfo(vp) }));
   }
 
   function createToolGroup(viewportIds: string[], renderingEngineId: string) {

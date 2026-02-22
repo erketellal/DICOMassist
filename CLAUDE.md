@@ -49,7 +49,9 @@ DICOMassist/
 ├── src/
 │   ├── viewer/              # Cornerstone3D setup, viewports, toolbar
 │   │   ├── CornerstoneInit.ts       # One-time init of core + tools + imageLoader
-│   │   ├── ViewportGrid.tsx          # Viewport layout (stack + MPR)
+│   │   ├── ViewportGrid.tsx          # Viewport layout (stack + MPR + grid)
+│   │   ├── viewportUtils.ts          # Shared viewport info extraction helpers
+│   │   ├── EmptyViewportOverlay.tsx  # Series picker for empty grid slots
 │   │   ├── Toolbar.tsx               # Tool buttons (W/L, Zoom, Pan, Scroll, Length, etc.)
 │   │   ├── DicomDropZone.tsx         # Drag-and-drop file loading
 │   │   └── LoadingOverlay.tsx        # Prefetch progress indicator
@@ -70,7 +72,9 @@ DICOMassist/
 │   │   ├── SpotlightPrompt.tsx       # Cmd+K / Ctrl+K overlay prompt input
 │   │   ├── ChatSidebar.tsx           # Collapsible sidebar with chat history
 │   │   ├── PipelineView.tsx          # Pipeline step visualization
+│   │   ├── PlanPreviewCard.tsx       # Selection plan summary card
 │   │   ├── AssistantMessage.tsx      # Formatted LLM response with interactive slice refs
+│   │   ├── SeriesBrowser.tsx         # Series list for grid slot selection
 │   │   ├── MetadataPanel.tsx         # Shows extracted DICOM metadata summary
 │   │   └── SettingsPanel.tsx         # LLM provider configuration (Claude/Ollama)
 │   ├── utils/
@@ -511,7 +515,7 @@ Spotlight Prompt (Cmd+K / Ctrl+K overlay, centered):
 ### Phase 5: Polish
 - [x] README with architecture diagram, screenshots, setup instructions
 - [x] Sample DICOM data download instructions
-- [ ] Error handling edge cases
+- [x] Error handling edge cases
 - [x] Keyboard shortcuts documentation
 - [x] "Not for clinical use" disclaimer in UI
 

@@ -3,5 +3,6 @@ dist
 .env.local
 *.dcm
 data/
+Data_DICOM/
 screenshots/
 .DS_Store
