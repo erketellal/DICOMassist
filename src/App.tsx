@@ -473,6 +473,7 @@ export default function App() {
               flipH={flipH}
               flipV={flipV}
               cineEnabled={cineEnabled}
+              studyMetadata={studyMetadata}
             />
           </div>
           <LoadingOverlay

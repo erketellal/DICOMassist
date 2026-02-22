@@ -24,6 +24,8 @@ import {
   utilities as csToolsUtilities,
 } from '@cornerstonejs/tools';
 import type { AnatomicalPlane } from '../dicom/orientationUtils';
+import type { StudyMetadata } from '../dicom/types';
+import EmptyViewportOverlay from './EmptyViewportOverlay';
 
 const RENDERING_ENGINE_ID = 'dicomRenderingEngine';
 const TOOL_GROUP_ID = 'mainTools';
@@ -100,6 +102,7 @@ interface ViewportGridProps {
   flipH?: boolean;
   flipV?: boolean;
   cineEnabled?: boolean;
+  studyMetadata?: StudyMetadata | null;
 }
 
 function ViewportOverlay({ label, info }: { label: string; info: ViewportInfo }) {
@@ -185,6 +188,7 @@ export default function ViewportGrid({
   imageIds, activeTool, layout, orientation, primaryAxis,
   orientationMarkerType = 'cube', onResetRef,
   invert = false, flipH = false, flipV = false, cineEnabled = false,
+  studyMetadata,
 }: ViewportGridProps) {
   const singleRef = useRef<HTMLDivElement>(null);
   const axialRef = useRef<HTMLDivElement>(null);
@@ -211,6 +215,9 @@ export default function ViewportGrid({
     CT_SAGITTAL: { current: 0, total: 0, ww: 0, wc: 0 },
     CT_CORONAL: { current: 0, total: 0, ww: 0, wc: 0 },
   });
+  // Per-slot state for grid layouts: maps slot index (1,2,3) → seriesUID
+  const [gridLoadedSlots, setGridLoadedSlots] = useState<Record<number, string>>({});
+  const [gridInfo, setGridInfo] = useState<Record<number, ViewportInfo>>({});
 
   // Create rendering engine once on mount — avoids WebGL context leaks
   useEffect(() => {
@@ -227,6 +234,10 @@ export default function ViewportGrid({
   // Set up viewports when layout/data changes (reuses the single engine)
   useEffect(() => {
     if (!renderingEngineRef.current || imageIds.length === 0) return;
+
+    // Clear secondary grid slots when layout or primary series changes
+    setGridLoadedSlots({});
+    setGridInfo({});
 
     const timer = setTimeout(() => {
       setupViewports();
@@ -267,7 +278,13 @@ export default function ViewportGrid({
     if (elements.length === 0) return;
 
     const observer = new ResizeObserver(() => {
-      renderingEngineRef.current?.resize();
+      const engine = renderingEngineRef.current;
+      if (!engine) return;
+      engine.resize();
+      for (const vp of engine.getViewports()) {
+        vp.resetCamera();
+        vp.render();
+      }
     });
 
     for (const el of elements) {
@@ -487,6 +504,7 @@ export default function ViewportGrid({
 
     const viewport = renderingEngine.getViewport(STACK_VIEWPORT_ID) as any;
     viewport.setStack(imageIds, 0).then(() => {
+      renderingEngine.resize();
       viewport.resetCamera();
       viewport.render();
       updateSingleInfo(STACK_VIEWPORT_ID);
@@ -527,6 +545,7 @@ export default function ViewportGrid({
       [VOLUME_SINGLE_VP_ID],
     );
 
+    renderingEngine.resize();
     renderingEngine.renderViewports([VOLUME_SINGLE_VP_ID]);
     applyToggles();
 
@@ -598,6 +617,7 @@ export default function ViewportGrid({
       MPR_VIEWPORT_IDS,
     );
 
+    renderingEngine.resize();
     renderingEngine.renderViewports(MPR_VIEWPORT_IDS);
     applyToggles();
 
@@ -662,6 +682,7 @@ export default function ViewportGrid({
     // Load images only into the first viewport
     const viewport = renderingEngine.getViewport(vpIds[0]) as any;
     viewport.setStack(imageIds, 0).then(() => {
+      renderingEngine.resize();
       viewport.resetCamera();
       viewport.render();
       updateSingleInfo(vpIds[0]);
@@ -670,6 +691,56 @@ export default function ViewportGrid({
 
     listenToViewport(elements[0], Enums.Events.STACK_NEW_IMAGE, () => updateSingleInfo(vpIds[0]));
     listenToViewport(elements[0], Enums.Events.VOI_MODIFIED, () => updateSingleInfo(vpIds[0]));
+  }
+
+  function loadSeriesIntoSlot(slotIndex: number, seriesUID: string) {
+    if (!studyMetadata) return;
+    const series = studyMetadata.series.find((s) => s.seriesInstanceUID === seriesUID);
+    if (!series) return;
+
+    const slotImageIds = series.slices.map((s) => s.imageId);
+    if (slotImageIds.length === 0) return;
+
+    const engine = renderingEngineRef.current;
+    if (!engine) return;
+
+    const vpId = GRID_VIEWPORT_IDS[slotIndex];
+    const viewport = engine.getViewport(vpId) as any;
+    if (!viewport) return;
+
+    viewport.setStack(slotImageIds, 0).then(() => {
+      viewport.resetCamera();
+      viewport.render();
+      updateGridSlotInfo(slotIndex, vpId);
+    });
+
+    // Find the element for this viewport to attach event listeners
+    const refs = [gridRef0, gridRef1, gridRef2, gridRef3];
+    const el = refs[slotIndex].current;
+    if (el) {
+      listenToViewport(el, Enums.Events.STACK_NEW_IMAGE, () => updateGridSlotInfo(slotIndex, vpId));
+      listenToViewport(el, Enums.Events.VOI_MODIFIED, () => updateGridSlotInfo(slotIndex, vpId));
+    }
+
+    setGridLoadedSlots((prev) => ({ ...prev, [slotIndex]: seriesUID }));
+  }
+
+  function updateGridSlotInfo(slotIndex: number, viewportId: string) {
+    const vp = renderingEngineRef.current?.getViewport(viewportId);
+    if (!vp) return;
+    const props = vp.getProperties() as any;
+    const { lower, upper } = props?.voiRange ?? { lower: 0, upper: 0 };
+    const ww = upper - lower;
+    const wc = lower + ww / 2;
+    setGridInfo((prev) => ({
+      ...prev,
+      [slotIndex]: {
+        current: vp.getSliceIndex(),
+        total: vp.getNumberOfSlices(),
+        ww,
+        wc,
+      },
+    }));
   }
 
   function createToolGroup(viewportIds: string[], renderingEngineId: string) {
@@ -869,21 +940,45 @@ export default function ViewportGrid({
         className={`w-full h-full grid ${gridClass} gap-px bg-neutral-800`}
         onContextMenu={(e) => e.preventDefault()}
       >
-        {Array.from({ length: count }).map((_, i) => (
-          <div key={i} className="flex overflow-hidden">
-            {i === 0 && <SliceSlider current={singleInfo.current} total={singleInfo.total} onChange={(idx) => handleSliceChange(GRID_VIEWPORT_IDS[0], idx)} />}
-            <div className="relative flex-1 min-w-0 bg-black">
-              <div ref={refs[i]} className="absolute inset-0" />
-              {i === 0 ? (
-                <ViewportOverlay label={orientationLabel} info={singleInfo} />
-              ) : (
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <span className="text-xs text-neutral-600">Drop series here</span>
-                </div>
+        {Array.from({ length: count }).map((_, i) => {
+          const isSlotLoaded = i > 0 && gridLoadedSlots[i];
+          const slotInfo = gridInfo[i];
+          const slotSeriesUID = gridLoadedSlots[i];
+          const slotSeries = slotSeriesUID && studyMetadata
+            ? studyMetadata.series.find((s) => s.seriesInstanceUID === slotSeriesUID)
+            : null;
+          const slotLabel = slotSeries
+            ? `#${slotSeries.seriesNumber} ${slotSeries.seriesDescription || ''}`
+            : '';
+
+          return (
+            <div key={i} className="flex overflow-hidden">
+              {i === 0 && (
+                <SliceSlider current={singleInfo.current} total={singleInfo.total} onChange={(idx) => handleSliceChange(GRID_VIEWPORT_IDS[0], idx)} />
               )}
+              {isSlotLoaded && slotInfo && (
+                <SliceSlider current={slotInfo.current} total={slotInfo.total} onChange={(idx) => handleSliceChange(GRID_VIEWPORT_IDS[i], idx)} />
+              )}
+              <div className="relative flex-1 min-w-0 bg-black">
+                <div ref={refs[i]} className="absolute inset-0" />
+                {i === 0 ? (
+                  <ViewportOverlay label={orientationLabel} info={singleInfo} />
+                ) : isSlotLoaded && slotInfo ? (
+                  <ViewportOverlay label={slotLabel} info={slotInfo} />
+                ) : studyMetadata && studyMetadata.series.length > 1 ? (
+                  <EmptyViewportOverlay
+                    availableSeries={studyMetadata.series}
+                    onSelect={(uid) => loadSeriesIntoSlot(i, uid)}
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <span className="text-xs text-neutral-600">No other series available</span>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     );
   }
