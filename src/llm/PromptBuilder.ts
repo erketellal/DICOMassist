@@ -74,29 +74,89 @@ export function buildSelectionSystemPrompt(): string {
     'You are a medical imaging AI assistant that helps select the most relevant DICOM slices for clinical analysis.',
     DISCLAIMER,
     '',
-    'Given study metadata and a clinical hint, output a JSON object (no markdown fences) with these exact fields:',
-    '- targetSeries: string — the Series Number (e.g. "3") of the best series for this clinical question',
-    '- sliceRange: [number, number] — inclusive instance number range [start, end] covering the anatomical region of interest',
-    '- samplingStrategy: "uniform" | "every_nth" | "all"',
-    '- samplingParam: number — for "uniform": the TOTAL number of slices to pick (10-20). For "every_nth": pick every Nth slice. Omit for "all".',
-    '- windowCenter: number — optimal window center for this clinical question',
-    '- windowWidth: number — optimal window width for this clinical question',
-    '- reasoning: string — brief explanation of your selections',
+    '## Clinical Series Selection Guide',
     '',
-    'CRITICAL CONSTRAINT: We can only send a MAXIMUM of 20 images to the vision model.',
-    '- ALWAYS use "uniform" with samplingParam between 10 and 20 for ranges with more than 20 slices.',
-    '- Only use "all" if the slice range contains ≤20 slices.',
-    '- Never set samplingParam above 20.',
-    '- The vision model will see these sampled slices and analyze them — it will NOT see every slice.',
+    'When selecting the PRIMARY series for analysis, reason about which orientation',
+    'and weighting is diagnostically standard for the clinical question:',
     '',
-    'Guidelines:',
-    '- Choose the series with the best plane, kernel, and resolution for the clinical question',
-    '- Select a slice range that covers the anatomical region of interest (narrower is better — focus on where pathology is expected)',
-    '- Use appropriate windowing (e.g., liver: W=150 C=70, lung: W=1500 C=-600, bone: W=2000 C=400, brain: W=80 C=40, soft tissue: W=400 C=40)',
-    '- For lesion detection: narrow the sliceRange to the relevant organ rather than selecting the entire series',
-    '- Output ONLY the JSON object, no other text',
+    '**Knee MRI:**',
+    '- ACL/PCL tears → Sagittal PD fat-sat (primary), Coronal PD fat-sat (supplementary)',
+    '- Meniscal tears → Sagittal PD fat-sat (primary), Coronal for body/root tears',
+    '- Cartilage → Sagittal PD fat-sat or T2 mapping',
+    '- Bone marrow edema → Any plane with fat-sat (STIR or PD-FS)',
+    '',
+    '**Brain MRI:**',
+    '- Stroke → DWI/ADC (primary), FLAIR (supplementary)',
+    '- Tumor → T1 post-contrast (primary), FLAIR, T2',
+    '',
+    '**Spine MRI:**',
+    '- Disc herniation → Sagittal T2 (primary), Axial T2 at level of interest',
+    '- Cord compression → Sagittal T2 (primary)',
+    '',
+    '**CT (any body part):**',
+    '- Soft tissue evaluation → Soft tissue kernel, W:400 C:40',
+    '- Lung evaluation → Lung kernel, W:1500 C:-600',
+    '- Bone evaluation → Bone kernel, W:2000 C:400',
+    '- Liver/abdomen → Soft tissue, portal venous phase if available',
+    '',
+    '**General rules:**',
+    '- Fat-suppressed sequences (FS, STIR) highlight pathology better than non-FS',
+    '- Higher resolution series (smaller pixel spacing) are preferred when available',
+    '- PD-weighted fat-sat is the workhorse for musculoskeletal pathology',
+    '- T1 is best for anatomy, T2/PD-FS is best for pathology detection',
+    '- Choose the series where the structure of interest is BEST visualized,',
+    '  not necessarily the series with the most slices',
+    '- If the clinical question doesn\'t clearly map to a specific orientation, prefer',
+    '  the series with the most slices in a standard orientation (axial for CT,',
+    '  sagittal for knee/spine MRI)',
+    '',
+    '## Slice Range Selection',
+    '',
+    'Do NOT default to selecting the entire series. Reason about WHERE in the series',
+    'the relevant anatomy is located:',
+    '- For sagittal knee views: The ACL, PCL, and central structures are in the',
+    '  MIDDLE THIRD of slices (roughly slices 13-26 of a 39-slice series)',
+    '- For axial views: Select the range covering the anatomical region of interest',
+    '- For spine sagittal: Select slices centered on the relevant vertebral levels',
+    '',
+    'A focused range of 10-15 slices through the relevant anatomy is BETTER than',
+    '40 slices covering the entire field of view. The vision model analyzes each',
+    'image — sending irrelevant slices dilutes the analysis quality.',
+    '',
+    'If you\'re unsure of the exact range, select the middle 50-70% of the series',
+    'rather than the full range.',
+    '',
+    '## OUTPUT CONSTRAINTS (MANDATORY)',
+    '',
+    '- You MUST select a maximum of 20 slices for the final output',
+    '- If your target range contains more than 20 slices, you MUST use a sampling',
+    '  strategy to reduce to ≤20',
+    '- The samplingParam in "uniform" mode means "select exactly this many slices',
+    '  evenly spaced across the range"',
+    '- Example: range 1-40 with uniform sampling, samplingParam=15 → 15 evenly',
+    '  spaced slices from the range',
+    '- NEVER set samplingStrategy to "all" if the range exceeds 20 slices',
+    '',
+    '## Output Format',
+    '',
+    'Output a JSON object (no markdown fences) with these exact fields:',
+    '- targetSeries: string — the Series Number (e.g. "3"), pick the best diagnostic series',
+    '- sliceRange: [number, number] — inclusive instance number range [start, end]',
+    '- samplingStrategy: "uniform" | "every_nth" | "all" — MUST result in ≤20 slices',
+    '- samplingParam: number — for "uniform": exact count (max 20). For "every_nth": step size. Omit for "all".',
+    '- windowCenter: number — appropriate for the pathology being evaluated',
+    '- windowWidth: number — appropriate for the pathology being evaluated',
+    '- reasoning: string — explain: why this series, why this range, why this windowing',
+    '',
+    'Output ONLY the JSON object, no other text.',
   ].join('\n');
 }
+
+const SPATIAL_KEYWORDS = [
+  'this slice', 'current slice', 'current view', 'this view',
+  'what am i looking at', 'what is this', 'this area', 'right here',
+  'this structure', 'this region', 'where i am',
+];
 
 export function buildSelectionUserPrompt(metadata: StudyMetadata, clinicalHint: string, viewportContext?: ViewportContext): string {
   const lines = [
@@ -104,11 +164,16 @@ export function buildSelectionUserPrompt(metadata: StudyMetadata, clinicalHint: 
     '',
   ];
 
+  // Only include viewport context when the user explicitly references their current view
   if (viewportContext) {
-    lines.push('=== CURRENT VIEWPORT POSITION ===');
-    lines.push(`The user is currently viewing Series #${viewportContext.seriesNumber}, slice #${viewportContext.currentInstanceNumber} of ${viewportContext.totalSlicesInSeries} (z=${viewportContext.currentZPosition.toFixed(1)}mm).`);
-    lines.push('Center your slice selection around this position — the user has scrolled here because this region is clinically relevant.');
-    lines.push('');
+    const hintLower = clinicalHint.toLowerCase();
+    const referencesViewport = SPATIAL_KEYWORDS.some((kw) => hintLower.includes(kw));
+    if (referencesViewport) {
+      lines.push('=== CURRENT VIEWPORT POSITION ===');
+      lines.push(`The user is currently viewing Series #${viewportContext.seriesNumber}, slice #${viewportContext.currentInstanceNumber} of ${viewportContext.totalSlicesInSeries} (z=${viewportContext.currentZPosition.toFixed(1)}mm).`);
+      lines.push('The user is referencing their current view — center your slice selection around this position.');
+      lines.push('');
+    }
   }
 
   lines.push('=== CLINICAL QUESTION ===');
@@ -139,6 +204,16 @@ export function buildAnalysisSystemPrompt(): string {
     'If applicable, suggest follow-up studies or actions.',
     '',
     'Always note that this is NOT a clinical diagnosis and should be reviewed by a qualified radiologist.',
+    '',
+    '## CRITICAL: Honest Reporting',
+    '',
+    '- If the structure of interest is NOT VISIBLE on a given slice, say so explicitly.',
+    '  Example: "Slice 4/39: This is a lateral slice. The ACL is not visible at this level."',
+    '- Do NOT fabricate or infer findings on slices where the relevant anatomy is not present.',
+    '- It is better to say "structure not visualized on this slice" than to guess.',
+    '- Only describe pathology you can actually see in the image.',
+    '- If none of the provided slices show the structure well, state that the slice',
+    '  selection may not have captured the optimal views.',
   ].join('\n');
 }
 
