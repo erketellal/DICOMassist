@@ -69,39 +69,36 @@ function updateStep(
   return steps.map((s) => (s.id === id ? { ...s, ...updates } : s));
 }
 
-const MIN_SLICES_IN_RANGE = 40; // Minimum instance range to ensure decent coverage
-
 /**
- * Fix common LLM planning mistakes:
- * - Single-slice range (e.g., [128, 128]) → expand to ±50 around center
- * - Too-narrow range → expand to at least MIN_SLICES_IN_RANGE
+ * Fix truly invalid LLM plans without overriding good focused ranges.
+ * - Inverted range → swap
+ * - Out-of-bounds → clamp to series instance range
+ * - samplingParam exceeds range → reduce to fit
+ * - "all" on >20 slices → switch to uniform
  * - Missing samplingParam for uniform → default to 15
- * - "all" strategy on large ranges → switch to uniform
  */
 function fixSelectionPlan(plan: SelectionPlan, metadata: StudyMetadata): SelectionPlan {
   const series = metadata.series.find((s) => String(s.seriesNumber) === plan.targetSeries);
   if (!series) return plan;
 
   const [minInst, maxInst] = series.instanceNumberRange;
-  let [rangeStart, rangeEnd] = plan.sliceRange;
-  const rangeSize = rangeEnd - rangeStart + 1;
+  let [start, end] = plan.sliceRange;
 
-  // Fix: single slice or tiny range → expand around center
-  if (rangeSize < MIN_SLICES_IN_RANGE) {
-    const center = Math.round((rangeStart + rangeEnd) / 2);
-    const halfRange = Math.round(MIN_SLICES_IN_RANGE / 2);
-    rangeStart = Math.max(minInst, center - halfRange);
-    rangeEnd = Math.min(maxInst, center + halfRange);
-    logger.warn(`[PlanFix] Range too narrow (${plan.sliceRange[0]}–${plan.sliceRange[1]}), expanded to ${rangeStart}–${rangeEnd}`);
-  }
+  // Swap if inverted
+  if (start > end) [start, end] = [end, start];
+
+  // Clamp to valid bounds
+  start = Math.max(minInst, start);
+  end = Math.min(maxInst, end);
+
+  let { samplingStrategy, samplingParam } = plan;
+  const rangeSize = end - start + 1;
 
   // Fix: "all" on a large range → switch to uniform
-  let { samplingStrategy, samplingParam } = plan;
-  const newRangeSize = rangeEnd - rangeStart + 1;
-  if (samplingStrategy === 'all' && newRangeSize > 20) {
+  if (samplingStrategy === 'all' && rangeSize > 20) {
     samplingStrategy = 'uniform';
     samplingParam = 15;
-    logger.warn(`[PlanFix] "all" on ${newRangeSize} slices → switched to uniform(15)`);
+    logger.warn(`[PlanFix] "all" on ${rangeSize} slices → switched to uniform(15)`);
   }
 
   // Fix: uniform without param → default to 15
@@ -110,9 +107,18 @@ function fixSelectionPlan(plan: SelectionPlan, metadata: StudyMetadata): Selecti
     logger.warn('[PlanFix] Missing samplingParam for uniform, defaulting to 15');
   }
 
+  // Ensure samplingParam doesn't exceed range size
+  if (samplingStrategy === 'uniform' && samplingParam != null && samplingParam > rangeSize) {
+    samplingParam = rangeSize;
+  }
+
+  if (start !== plan.sliceRange[0] || end !== plan.sliceRange[1]) {
+    logger.warn(`[PlanFix] Clamped range: [${plan.sliceRange}] → [${start},${end}]`);
+  }
+
   return {
     ...plan,
-    sliceRange: [rangeStart, rangeEnd],
+    sliceRange: [start, end],
     samplingStrategy,
     samplingParam,
   };
