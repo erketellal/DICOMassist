@@ -5,6 +5,7 @@ import {
   volumeLoader,
   setVolumesForViewports,
   cache,
+  eventTarget,
   utilities as csCoreUtilities,
 } from '@cornerstonejs/core';
 import {
@@ -213,6 +214,7 @@ export default function ViewportGrid({
   // Per-slot state for grid layouts: maps slot index (1,2,3) → seriesUID
   const [gridLoadedSlots, setGridLoadedSlots] = useState<Record<number, string>>({});
   const [gridInfo, setGridInfo] = useState<Record<number, ViewportInfo>>({});
+  const [pickingSlot, setPickingSlot] = useState<number | null>(null);
 
   // Create rendering engine once on mount — avoids WebGL context leaks
   useEffect(() => {
@@ -233,6 +235,7 @@ export default function ViewportGrid({
     // Clear secondary grid slots when layout or primary series changes
     setGridLoadedSlots({});
     setGridInfo({});
+    setPickingSlot(null);
 
     const timer = setTimeout(() => {
       setupViewports();
@@ -552,6 +555,13 @@ export default function ViewportGrid({
     });
 
     updateSingleInfo(VOLUME_SINGLE_VP_ID);
+
+    // Volume loading completes asynchronously — update info once ready
+    const onVolumeLoaded = () => updateSingleInfo(VOLUME_SINGLE_VP_ID);
+    eventTarget.addEventListener(Enums.Events.IMAGE_VOLUME_LOADING_COMPLETED, onVolumeLoaded);
+    eventCleanupsRef.current.push(() =>
+      eventTarget.removeEventListener(Enums.Events.IMAGE_VOLUME_LOADING_COMPLETED, onVolumeLoaded),
+    );
   }
 
   function updateSingleInfo(viewportId: string) {
@@ -607,6 +617,16 @@ export default function ViewportGrid({
     renderingEngine.renderViewports(MPR_VIEWPORT_IDS);
     applyToggles();
 
+    const updateAllMprInfo = () => {
+      const engine = renderingEngineRef.current;
+      if (!engine) return;
+      for (const vpId of MPR_VIEWPORT_IDS) {
+        const vp = engine.getViewport(vpId);
+        if (!vp) continue;
+        setMprInfo((prev) => ({ ...prev, [vpId]: extractViewportInfo(vp) }));
+      }
+    };
+
     for (let i = 0; i < MPR_VIEWPORT_IDS.length; i++) {
       const vpId = MPR_VIEWPORT_IDS[i];
       const el = elements[i];
@@ -621,6 +641,13 @@ export default function ViewportGrid({
       listenToViewport(el, Enums.Events.VOI_MODIFIED, updateVpInfo);
       updateVpInfo();
     }
+
+    // Volume loading completes asynchronously — update info once ready
+    const onVolumeLoaded = () => updateAllMprInfo();
+    eventTarget.addEventListener(Enums.Events.IMAGE_VOLUME_LOADING_COMPLETED, onVolumeLoaded);
+    eventCleanupsRef.current.push(() =>
+      eventTarget.removeEventListener(Enums.Events.IMAGE_VOLUME_LOADING_COMPLETED, onVolumeLoaded),
+    );
   }
 
   // Grid layouts (1x2, 2x1, 2x2): StackViewports, first has images, rest are empty
@@ -682,21 +709,26 @@ export default function ViewportGrid({
     const viewport = engine.getViewport(vpId) as any;
     if (!viewport) return;
 
+    const infoUpdater = slotIndex === 0
+      ? () => updateSingleInfo(vpId)
+      : () => updateGridSlotInfo(slotIndex, vpId);
+
     viewport.setStack(slotImageIds, 0).then(() => {
       viewport.resetCamera();
       viewport.render();
-      updateGridSlotInfo(slotIndex, vpId);
+      infoUpdater();
     });
 
     // Find the element for this viewport to attach event listeners
     const refs = [gridRef0, gridRef1, gridRef2, gridRef3];
     const el = refs[slotIndex].current;
     if (el) {
-      listenToViewport(el, Enums.Events.STACK_NEW_IMAGE, () => updateGridSlotInfo(slotIndex, vpId));
-      listenToViewport(el, Enums.Events.VOI_MODIFIED, () => updateGridSlotInfo(slotIndex, vpId));
+      listenToViewport(el, Enums.Events.STACK_NEW_IMAGE, infoUpdater);
+      listenToViewport(el, Enums.Events.VOI_MODIFIED, infoUpdater);
     }
 
     setGridLoadedSlots((prev) => ({ ...prev, [slotIndex]: seriesUID }));
+    setPickingSlot(null);
   }
 
   function updateGridSlotInfo(slotIndex: number, viewportId: string) {
@@ -903,31 +935,47 @@ export default function ViewportGrid({
         onContextMenu={(e) => e.preventDefault()}
       >
         {Array.from({ length: count }).map((_, i) => {
-          const isSlotLoaded = i > 0 && gridLoadedSlots[i];
-          const slotInfo = gridInfo[i];
+          const isSlotLoaded = i === 0 || !!gridLoadedSlots[i];
+          const slotInfo = i === 0 ? singleInfo : gridInfo[i];
           const slotSeriesUID = gridLoadedSlots[i];
           const slotSeries = slotSeriesUID && studyMetadata
             ? studyMetadata.series.find((s) => s.seriesInstanceUID === slotSeriesUID)
             : null;
-          const slotLabel = slotSeries
-            ? `#${slotSeries.seriesNumber} ${slotSeries.seriesDescription || ''}`
-            : '';
+          const slotLabel = i === 0
+            ? orientationLabel
+            : slotSeries
+              ? `#${slotSeries.seriesNumber} ${slotSeries.seriesDescription || ''}`
+              : '';
+          const hasSeries = studyMetadata && studyMetadata.series.length > 1;
+          const isPicking = pickingSlot === i;
 
           return (
             <div key={i} className="flex overflow-hidden">
-              {i === 0 && (
-                <SliceSlider current={singleInfo.current} total={singleInfo.total} onChange={(idx) => handleSliceChange(GRID_VIEWPORT_IDS[0], idx)} />
-              )}
               {isSlotLoaded && slotInfo && (
                 <SliceSlider current={slotInfo.current} total={slotInfo.total} onChange={(idx) => handleSliceChange(GRID_VIEWPORT_IDS[i], idx)} />
               )}
               <div className="relative flex-1 min-w-0 bg-black">
                 <div ref={refs[i]} className="absolute inset-0" />
-                {i === 0 ? (
-                  <ViewportOverlay label={orientationLabel} info={singleInfo} />
+                {isPicking && hasSeries ? (
+                  <EmptyViewportOverlay
+                    availableSeries={studyMetadata.series}
+                    onSelect={(uid) => loadSeriesIntoSlot(i, uid)}
+                    onClose={() => setPickingSlot(null)}
+                  />
                 ) : isSlotLoaded && slotInfo ? (
-                  <ViewportOverlay label={slotLabel} info={slotInfo} />
-                ) : studyMetadata && studyMetadata.series.length > 1 ? (
+                  <>
+                    <ViewportOverlay label={slotLabel} info={slotInfo} />
+                    {hasSeries && (
+                      <button
+                        onClick={() => setPickingSlot(i)}
+                        className="absolute top-2 right-2 z-10 w-6 h-6 flex items-center justify-center rounded bg-neutral-800/70 hover:bg-neutral-700 text-neutral-400 hover:text-neutral-200 text-xs transition-colors"
+                        title="Switch series"
+                      >
+                        &#x21C4;
+                      </button>
+                    )}
+                  </>
+                ) : hasSeries ? (
                   <EmptyViewportOverlay
                     availableSeries={studyMetadata.series}
                     onSelect={(uid) => loadSeriesIntoSlot(i, uid)}
