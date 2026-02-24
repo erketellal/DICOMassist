@@ -10,6 +10,8 @@ import MetadataPanel from './ui/MetadataPanel';
 import SeriesBrowser from './ui/SeriesBrowser';
 import ChatSidebar, { type ChatSidebarHandle } from './ui/ChatSidebar';
 import SettingsPanel from './ui/SettingsPanel';
+import DisclaimerModal from './ui/DisclaimerModal';
+import LandingScreen from './ui/LandingScreen';
 import type { AnatomicalPlane } from './dicom/orientationUtils';
 import type { StudyMetadata } from './dicom/types';
 import type { ProviderConfig, ViewportContext } from './llm/types';
@@ -31,6 +33,7 @@ function saveConfig(config: ProviderConfig) {
 }
 
 export default function App() {
+  const [disclaimerAccepted, setDisclaimerAccepted] = useState(false);
   const [ready, setReady] = useState(false);
   const [imageIds, setImageIds] = useState<string[]>([]);
   const [primaryAxis, setPrimaryAxis] = useState<AnatomicalPlane>('axial');
@@ -238,6 +241,10 @@ export default function App() {
     setCineEnabled(false);
   }, []);
 
+  const handleAcceptDisclaimer = useCallback(() => {
+    setDisclaimerAccepted(true);
+  }, []);
+
   const handleConfigChange = useCallback((config: ProviderConfig) => {
     setProviderConfig(config);
     saveConfig(config);
@@ -411,14 +418,24 @@ export default function App() {
 
   if (!ready) {
     return (
-      <div className="flex items-center justify-center h-full text-neutral-500">
-        Initializing viewer...
-      </div>
+      <>
+        {!disclaimerAccepted && <DisclaimerModal onAccept={handleAcceptDisclaimer} />}
+        <div className="flex items-center justify-center h-full text-neutral-500">
+          Initializing viewer...
+        </div>
+      </>
     );
   }
 
   if (imageIds.length === 0) {
-    return <DicomDropZone onFilesLoaded={handleFilesLoaded} />;
+    return (
+      <>
+        {!disclaimerAccepted && <DisclaimerModal onAccept={handleAcceptDisclaimer} />}
+        <LandingScreen>
+          <DicomDropZone onFilesLoaded={handleFilesLoaded} />
+        </LandingScreen>
+      </>
+    );
   }
 
   return (
