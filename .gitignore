@@ -6,6 +6,8 @@ dist
 *.dcm
 data/
 Data_DICOM/
+DATA_dicom/
 testdata/
+dicom_data/
 screenshots/
 .DS_Store
