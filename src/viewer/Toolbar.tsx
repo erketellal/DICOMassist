@@ -169,7 +169,7 @@ export default function Toolbar({
     }`;
 
   return (
-    <div className="flex items-center gap-1 px-3 py-2 bg-neutral-900 border-b border-neutral-800">
+    <div className="flex items-center gap-1 px-3 py-2 bg-neutral-900 border-b border-neutral-800 overflow-x-auto whitespace-nowrap">
       {/* Series browser toggle — far left */}
       {onToggleSeriesBrowser && (
         <>
