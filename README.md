@@ -4,6 +4,14 @@
 
 Smart slice selection meets multimodal AI analysis. DICOMassist is a web-based DICOM viewer that intelligently selects the right images before sending them to an LLM for analysis — because the hard part isn't the AI, it's knowing what to send it.
 
+<p align="center">
+  <img src="docs/demo.gif" alt="DICOMassist demo" width="800" />
+</p>
+
+<p align="center">
+  <a href="https://youtu.be/fdDkg8ZleyA">Watch the full demo video</a> · <a href="https://dicomassist.dev">Live demo</a>
+</p>
+
 > ⚠️ **Educational and research use only.** Not a certified medical device. Not intended for clinical diagnosis or treatment decisions.
 
 ## How It Works
@@ -29,7 +37,7 @@ A knee MRI can have 200+ slices across 8+ series. Dumping them all to an AI give
 
 ### Live demo
 
-Visit [dicomassist.vercel.app](https://dicomassist.vercel.app)
+Visit [dicomassist.dev](https://dicomassist.dev)
 
 ### Run locally
 
