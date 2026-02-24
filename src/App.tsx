@@ -429,12 +429,12 @@ export default function App() {
 
   if (imageIds.length === 0) {
     return (
-      <>
+      <div className="h-full overflow-y-auto">
         {!disclaimerAccepted && <DisclaimerModal onAccept={handleAcceptDisclaimer} />}
         <LandingScreen>
           <DicomDropZone onFilesLoaded={handleFilesLoaded} />
         </LandingScreen>
-      </>
+      </div>
     );
   }
 

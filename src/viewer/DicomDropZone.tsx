@@ -228,7 +228,7 @@ export default function DicomDropZone({ onFilesLoaded }: DicomDropZoneProps) {
       onDrop={handleDrop}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
-      className={`flex flex-col items-center justify-center h-full border-2 border-dashed rounded-lg m-4 transition-colors ${
+      className={`flex flex-col items-center justify-center h-full border-2 border-dashed rounded-lg transition-colors ${
         dragOver ? 'border-blue-500 bg-blue-500/10' : 'border-neutral-700 hover:border-neutral-500'
       }`}
     >
