@@ -1,72 +1,37 @@
 # DICOMassist
 
-A web-based DICOM viewer with LLM-powered slice selection and clinical analysis. Built with Cornerstone3D v4, React, and TypeScript.
+**AI-Powered Medical Image Analysis**
 
-![DICOMassist screenshot](screenshots/Screenshot%202026-02-18%20at%2013.45.25.png)
+Smart slice selection meets multimodal AI analysis. DICOMassist is a web-based DICOM viewer that intelligently selects the right images before sending them to an LLM for analysis — because the hard part isn't the AI, it's knowing what to send it.
 
-> **Disclaimer**: This is a portfolio/research project. Not intended for clinical diagnosis.
+> ⚠️ **Educational and research use only.** Not a certified medical device. Not intended for clinical diagnosis or treatment decisions.
 
-## What Makes This Different
+## How It Works
 
-Most medical AI demos send a single image to an LLM. Real CT scans have 200-500+ slices across multiple series. Dumping all of them is expensive, slow, and noisy.
+A knee MRI can have 200+ slices across 8+ series. Dumping them all to an AI gives garbage results. DICOMassist uses a **two-call architecture**:
 
-DICOMassist uses a **two-call architecture** to intelligently filter slices:
+1. **Load** — Drag and drop DICOM files or folders into the browser
+2. **Analyze** — Describe what to evaluate (e.g., "evaluate for ACL tear grade")
+3. **Plan** — The LLM analyzes study metadata and selects the optimal series, slice range, and windowing based on the clinical question
+4. **Review** — Only the focused slices are sent for multimodal analysis, producing findings with interactive slice references you can click to navigate
 
-```
-                    Clinical Hint
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │   Call 1 (text)     │  Metadata + hint
-              │   Selection Plan    │  → series, range, W/L
-              └────────┬────────────┘
-                       │
-            ┌──────────▼──────────┐
-            │   Smart Filtering   │  Apply plan: select
-            │   10-20 slices      │  relevant slices only
-            └──────────┬──────────┘
-                       │
-              ┌────────▼────────────┐
-              │  Call 2 (vision)    │  Selected JPEGs +
-              │  Clinical Analysis  │  metadata context
-              └─────────────────────┘
-```
+## Key Features
 
-**Call 1** is text-only and cheap: the LLM receives structured metadata (series descriptions, slice counts, z-ranges, convolution kernels) plus the clinical hint, and returns a selection plan — which series to use, which slice range, what window/level, and how to sample.
-
-**Call 2** is multimodal: only the 10-20 most relevant slices (windowed and resized) are sent for visual analysis, along with position labels so the LLM can reference specific slices.
-
-## Features
-
-- **DICOM Viewer**: Cornerstone3D v4 with stack and MPR layouts, standard tools (W/L, Zoom, Pan, Length, Scroll)
-- **Multi-Viewport Grid**: 1x2, 2x1, and 2x2 grid layouts with per-slot series selection from a series browser
-- **Orientation Markers**: Switchable 3D orientation indicators (Annotated Cube with L/R/A/P/S/I labels, Axes, or Human Model) in the viewport corner
-- **Drag-and-Drop Loading**: Drop a DICOM folder, progressive loading with prefetch progress
-- **Metadata Extraction**: Automatic extraction of study, series, and per-slice spatial metadata
-- **LLM Analysis**: Two-call architecture with structured selection planning and multimodal analysis
-- **Interactive Slice References**: LLM responses contain clickable slice references that navigate the viewer
-- **Pipeline Visualization**: Real-time step-by-step progress during analysis (timing, slice mappings, LLM reasoning)
-- **Multi-Provider**: Claude API and Ollama (local) with separate text/vision model configuration
-- **Keyboard Shortcuts**: `Cmd+K` spotlight prompt, `Cmd+B` chat toggle
-
-## Tech Stack
-
-- **Frontend**: React 18 + Vite + TypeScript
-- **Viewer**: Cornerstone3D v4 (`@cornerstonejs/core`, `tools`, `dicom-image-loader`)
-- **Styling**: Tailwind CSS v4
-- **Icons**: lucide-react
-- **LLM**: Provider-agnostic service layer (Claude API, Ollama)
+- **Smart slice filtering** — AI reasons about which series orientation, weighting, and slice range are diagnostically relevant, then samples only those slices
+- **Multi-series support** — Automatic scout detection, series metadata extraction (orientation, MRI weighting, resolution)
+- **Interactive results** — Clickable slice references in findings jump the viewer to the referenced image
+- **Privacy-first** — DICOM files are processed entirely in your browser. No data is uploaded to any server. Image data is only sent to the LLM provider you configure when you run an analysis
+- **Multiple layouts** — 1×1, 1×2, 2×1, 2×2 grid, and MPR (axial/sagittal/coronal)
+- **Standard tools** — Window/Level, Zoom, Pan, Length measurement, Rotate, Flip, Invert, Cine playback
+- **Provider-agnostic** — Works with Claude API (recommended) or local models via Ollama
 
 ## Getting Started
 
-### Prerequisites
+### Live demo
 
-- Node.js 20+
-- An LLM provider (choose one):
-  - **Ollama** (free, local) — recommended for getting started
-  - **Claude API key** (from [console.anthropic.com](https://console.anthropic.com))
+Visit [dicomassist.vercel.app](https://dicomassist.vercel.app)
 
-### Setup
+### Run locally
 
 ```bash
 git clone https://github.com/erketellal/DICOMassist.git
@@ -75,96 +40,59 @@ npm install
 npm run dev
 ```
 
-### LLM Configuration
+### Configure AI analysis
 
-Click the gear icon in the toolbar to open settings.
+1. Click the ⚙ Settings icon in the toolbar
+2. Select **Claude API** and enter your API key ([get one here](https://console.anthropic.com))
+3. Load DICOM files, click **Analyze**, and describe what to evaluate
 
-#### Option A: Ollama (Local)
+For local models, install [Ollama](https://ollama.ai), pull a model (`ollama pull gemma3:4b`), and select Ollama in settings. Note: local models produce significantly lower quality results for medical image analysis compared to Claude.
 
-1. Install [Ollama](https://ollama.com)
-2. Pull models:
-   ```bash
-   # Text model for selection planning (Call 1)
-   ollama pull alibayram/medgemma:4b
+### Sample data
 
-   # Vision model for image analysis (Call 2)
-   ollama pull llava:7b
-   ```
-3. Start Ollama (it runs on `http://localhost:11434` by default)
-4. In DICOMassist settings, select "Ollama" and configure model names
+To try DICOMassist, you can use public DICOM datasets:
 
-> **Note**: Ollama requires CORS to be enabled. Set the environment variable `OLLAMA_ORIGINS=*` before starting Ollama, or use the default URL which the app handles.
+- [DICOM Library](https://www.dicomlibrary.com) — free sample datasets
+- [The Cancer Imaging Archive](https://www.cancerimagingarchive.net) — research datasets
+- [OAI (Osteoarthritis Initiative)](https://nda.nih.gov/oai/) — knee MRI datasets
 
-#### Option B: Claude API
+## Tech Stack
 
-1. Get an API key from [console.anthropic.com](https://console.anthropic.com)
-2. In DICOMassist settings, select "Claude" and paste your API key
-3. The key is stored in localStorage and never sent anywhere except the Anthropic API
+- **React 18** + TypeScript + Vite
+- **Cornerstone3D v4** — medical image rendering, viewport management, tools
+- **Claude API** (Anthropic) — multimodal LLM for image analysis
+- **Ollama** — optional local model support
 
-### Sample DICOM Data
-
-For testing, download from [TCIA — LDCT and Projection Data](https://www.cancerimagingarchive.net/collection/ldct-and-projection-data/):
-- Contains head, chest, and abdomen CT scans with clinical annotations
-- Standard DICOM P10 format
-- Free for research use (requires citation)
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|---|---|
-| `Cmd+K` / `Ctrl+K` | Open spotlight prompt |
-| `Cmd+B` / `Ctrl+B` | Toggle chat sidebar |
-| `Escape` | Close spotlight / settings |
-
-## Project Structure
+## Architecture
 
 ```
-src/
-├── viewer/                    # Cornerstone3D setup and viewport management
-│   ├── CornerstoneInit.ts     # One-time init of core + tools + imageLoader
-│   ├── ViewportGrid.tsx       # Stack, MPR, and grid viewport layouts
-│   ├── viewportUtils.ts       # Shared viewport info extraction helpers
-│   ├── EmptyViewportOverlay.tsx # Series picker for empty grid slots
-│   ├── Toolbar.tsx            # Tool buttons and layout controls
-│   ├── DicomDropZone.tsx      # Drag-and-drop DICOM loading
-│   └── LoadingOverlay.tsx     # Prefetch progress indicator
-├── dicom/                     # Metadata extraction
-│   ├── MetadataExtractor.ts   # Extract DICOM tags from loaded files
-│   ├── orientationUtils.ts    # Anatomical plane detection from direction cosines
-│   └── types.ts               # StudyMetadata, SeriesMetadata, SliceMetadata
-├── filtering/                 # Slice selection logic
-│   ├── SliceSelector.ts       # Apply LLM selection plan to series data
-│   ├── SliceExporter.ts       # DICOM → windowed JPEG conversion
-│   └── types.ts               # SelectedSlice type
-├── llm/                       # LLM integration (provider-agnostic)
-│   ├── LLMServiceFactory.ts   # Claude + Ollama service implementations
-│   ├── PromptBuilder.ts       # Construct prompts from metadata + hint
-│   ├── useLLMChat.ts          # React hook: pipeline orchestration + state
-│   └── types.ts               # LLMService interface, SelectionPlan, ChatMessage
-├── ui/                        # App-level UI components
-│   ├── SpotlightPrompt.tsx    # Cmd+K overlay prompt input
-│   ├── ChatSidebar.tsx        # Chat history and follow-up input
-│   ├── PipelineView.tsx       # Pipeline step visualization
-│   ├── PlanPreviewCard.tsx    # Selection plan summary card
-│   ├── AssistantMessage.tsx   # Formatted LLM response with interactive slice refs
-│   ├── SeriesBrowser.tsx      # Series list for grid slot selection
-│   ├── MetadataPanel.tsx      # DICOM metadata summary panel
-│   └── SettingsPanel.tsx      # LLM provider configuration
-├── utils/
-│   └── logger.ts              # Dev-gated console logging
-├── App.tsx                    # Root component, viewport context, keyboard shortcuts
-└── main.tsx                   # Entry point
+User prompt ("evaluate ACL tear")
+        │
+        ▼
+   ┌─────────┐     Study metadata
+   │  Call 1  │◄─── (series list, orientations,
+   │  (text)  │     slice counts, resolutions)
+   └────┬────┘
+        │ Selection plan:
+        │ Series #8 sagittal PD-FS, slices 13-27
+        ▼
+   ┌──────────┐     Focused JPEG exports
+   │  Call 2   │◄─── (15 slices, windowed,
+   │ (vision)  │     with slice labels)
+   └────┬─────┘
+        │
+        ▼
+   Findings with slice references
 ```
 
-## Deployment
+## Contributing
 
-The app is deployed on Vercel: [dicomassist.vercel.app](https://dicomassist.vercel.app)
-
-To deploy your own instance:
-```bash
-npx vercel --prod
-```
+Contributions are welcome! This is an open-source project — feel free to open issues, submit PRs, or suggest features.
 
 ## License
 
 MIT
+
+---
+
+*DICOMassist is an educational tool built to demonstrate intelligent data preparation for AI-powered medical image analysis. It is not a certified medical device and must not be used for clinical decision-making.*

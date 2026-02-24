@@ -116,11 +116,6 @@ export default function PlanPreviewCard({ plan, metadata, onAccept, onCancel }: 
       {/* Expanded fields */}
       {expanded && (
         <div className="px-3 pb-3 pt-1 border-t border-neutral-700/50 space-y-2.5">
-          {/* Reasoning */}
-          <p className="text-[11px] text-neutral-500 leading-relaxed italic">
-            {plan.reasoning}
-          </p>
-
           {/* Series */}
           <div>
             <label className="text-[10px] text-neutral-500 uppercase tracking-wide">Series</label>
