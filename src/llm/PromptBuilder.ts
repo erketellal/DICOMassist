@@ -190,30 +190,76 @@ export function buildAnalysisSystemPrompt(): string {
     DISCLAIMER,
     '',
     'Analyze the provided images in the context of the clinical question and study metadata.',
-    'Structure your response clearly with:',
-    '## Summary',
-    'A concise overall assessment.',
     '',
-    '## Findings',
-    'List each finding as a bullet point.',
+    '## CRITICAL ANALYSIS RULES',
     '',
-    '## Limitations',
-    'Note any limitations of this analysis.',
+    '1. ONLY report findings you can clearly visualize on the provided images.',
+    '   If you cannot see a structure clearly, say "not adequately visualized"',
+    '   rather than guessing.',
     '',
-    '## Suggested Follow-up',
-    'If applicable, suggest follow-up studies or actions.',
+    '2. For each finding, you MUST reference the specific slice(s) where you',
+    '   see the finding. If you cannot point to a specific slice, do not',
+    '   report the finding.',
     '',
-    'Always note that this is NOT a clinical diagnosis and should be reviewed by a qualified radiologist.',
+    '3. Distinguish between definite, probable, and possible findings:',
+    '   - DEFINITE: Clearly visible on images (e.g., "Complete fiber discontinuity',
+    '     visible on slices 17-20")',
+    '   - PROBABLE: Likely present but not unambiguous (e.g., "Probable partial',
+    '     tear — signal abnormality on slice 18, but limited by slice sampling")',
+    '   - POSSIBLE: Cannot confirm or exclude (e.g., "Possible meniscal tear —',
+    '     cannot adequately assess on provided slices")',
     '',
-    '## CRITICAL: Honest Reporting',
+    '4. If the provided slices do not adequately cover a structure, state this',
+    '   explicitly rather than making assumptions. Example: "The lateral meniscus',
+    '   is not well-visualized on the provided sagittal slices — coronal images',
+    '   would be needed for adequate assessment."',
     '',
-    '- If the structure of interest is NOT VISIBLE on a given slice, say so explicitly.',
-    '  Example: "Slice 4/39: This is a lateral slice. The ACL is not visible at this level."',
-    '- Do NOT fabricate or infer findings on slices where the relevant anatomy is not present.',
-    '- It is better to say "structure not visualized on this slice" than to guess.',
-    '- Only describe pathology you can actually see in the image.',
-    '- If none of the provided slices show the structure well, state that the slice',
-    '  selection may not have captured the optimal views.',
+    '5. Always include a LIMITATIONS section noting:',
+    '   - How many slices were analyzed out of the total series',
+    '   - Any structures that could not be adequately assessed',
+    '   - That this is a sample of the full dataset',
+    '',
+    '6. Do NOT fabricate normal findings just to be thorough. If you only',
+    '   see the ACL clearly, only comment on the ACL. Don\'t add "PCL appears',
+    '   intact" unless you can actually see it on the provided slices.',
+    '',
+    '7. When in doubt, err on the side of "cannot determine" rather than',
+    '   making a definitive call. False confidence is worse than admitted',
+    '   uncertainty.',
+    '',
+    '## RESPONSE FORMAT',
+    '',
+    '# [Modality] [Body Part] Analysis — [Clinical Question]',
+    '',
+    'DISCLAIMER: This is an educational analysis only and NOT a clinical diagnosis.',
+    'All findings must be verified by a board-certified radiologist before any',
+    'clinical decision-making.',
+    '',
+    '---',
+    '',
+    'SUMMARY',
+    '[2-3 sentences. State the main finding with confidence level. If no clear',
+    'pathology is identified, say so directly. If findings are equivocal, say so.]',
+    '',
+    'Conclusion: [One sentence definitive statement]',
+    '',
+    '---',
+    '',
+    'FINDINGS',
+    '',
+    '### [Primary Clinical Question]',
+    '- [Finding with slice reference and confidence level]',
+    '',
+    '### Additional Observations',
+    '- [Only findings clearly visible on images]',
+    '',
+    '### Limitations',
+    '- Analyzed [X] of [Y] total slices in this series',
+    '- [Any structures not adequately visualized]',
+    '- [Any additional series that would help clarify findings]',
+    '',
+    '---',
+    'Not for clinical diagnosis',
   ].join('\n');
 }
 
@@ -225,15 +271,23 @@ export function buildAnalysisUserPrompt(
 ): string {
   const series = metadata.series.find((s) => String(s.seriesNumber) === plan.targetSeries);
   const totalSlices = series?.slices.length ?? sliceLabels.length;
+  const seriesDesc = series?.seriesDescription || '(no description)';
+  const samplingDesc = `${plan.samplingStrategy}${plan.samplingParam ? ` (${plan.samplingParam})` : ''}`;
+
   const lines = [
+    `Analyze ONLY the following ${sliceLabels.length} images from ${seriesDesc}.`,
+    `These are slices ${plan.sliceRange[0]}–${plan.sliceRange[1]} of ${totalSlices} in the series, sampled at ${samplingDesc}.`,
+    '',
     `Clinical question: ${clinicalHint}`,
+    '',
+    'Remember: Only report what you can clearly see. Reference specific slices for every finding. State limitations honestly.',
     '',
     `Study: ${metadata.studyDescription} | ${metadata.modality}`,
   ];
   if (metadata.patientAge) lines.push(`Patient: ${metadata.patientAge} ${metadata.patientSex ?? ''}`);
   lines.push('');
   if (series) {
-    lines.push(`Viewing Series #${series.seriesNumber}: ${series.seriesDescription || '(no description)'}`);
+    lines.push(`Viewing Series #${series.seriesNumber}: ${seriesDesc}`);
     lines.push(`Plane: ${series.anatomicalPlane} | Kernel: ${series.convolutionKernel ?? 'N/A'}`);
     lines.push(`Total slices in series: ${totalSlices} (instance #${series.instanceNumberRange[0]}–#${series.instanceNumberRange[1]})`);
     if (series.zCoverageInMm > 0) {
@@ -254,7 +308,7 @@ export function buildAnalysisUserPrompt(
     }
   }
   lines.push(`Window: W=${plan.windowWidth} C=${plan.windowCenter}`);
-  lines.push(`Slice selection: instances #${plan.sliceRange[0]}–#${plan.sliceRange[1]}, ${plan.samplingStrategy}${plan.samplingParam ? ` (${plan.samplingParam})` : ''}`);
+  lines.push(`Slice selection: instances #${plan.sliceRange[0]}–#${plan.sliceRange[1]}, ${samplingDesc}`);
   lines.push(`Selection reasoning: ${plan.reasoning}`);
   lines.push('');
   lines.push(`IMPORTANT CONTEXT: You are viewing ${sliceLabels.length} sampled slices from a series of ${totalSlices} total slices. There are gaps between the images you see. A finding visible in one image may span more slices than shown. Account for this sampling when describing extent and when noting limitations.`);
@@ -265,7 +319,6 @@ export function buildAnalysisUserPrompt(
   lines.push(`When referencing findings, cite the slice number (e.g., "Slice 45/${totalSlices}") so the reader can navigate to it in the viewer.`);
   lines.push(`You may reference a range (e.g., "Slices 45–66/${totalSlices}").`);
   lines.push(`IMPORTANT: Only reference slice numbers from the list above. Do NOT invent or guess slice numbers that were not provided.`);
-  lines.push('Please analyze these images in the context of the clinical question.');
 
   return lines.join('\n');
 }
