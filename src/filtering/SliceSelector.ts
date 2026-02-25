@@ -1,5 +1,5 @@
 import type { StudyMetadata, SeriesMetadata } from '../dicom/types';
-import type { SelectionPlan } from '../llm/types';
+import type { SelectionPlan, SeriesSelection } from '../llm/types';
 import type { SelectedSlice } from './types';
 import { logger } from '../utils/logger';
 
@@ -19,11 +19,30 @@ function varyingAxisIndex(plane: SeriesMetadata['anatomicalPlane']): number {
   }
 }
 
+interface SamplingParams {
+  sliceRange: [number, number];
+  samplingStrategy: 'every_nth' | 'uniform' | 'all';
+  samplingParam?: number;
+}
+
+/**
+ * Select slices for a single SeriesSelection.
+ */
+export function selectSlicesForSelection(
+  metadata: StudyMetadata,
+  selection: SeriesSelection,
+): SelectedSlice[] {
+  const series = metadata.series.find((s) => String(s.seriesNumber) === selection.seriesNumber);
+  if (!series) return [];
+  return selectFromSeries(series, selection);
+}
+
+/**
+ * Legacy entry point — selects slices using plan.targetSeries / plan.sliceRange (selections[0]).
+ */
 export function selectSlices(metadata: StudyMetadata, plan: SelectionPlan): SelectedSlice[] {
-  // Find the target series by series number
   const series = metadata.series.find((s) => String(s.seriesNumber) === plan.targetSeries);
   if (!series) {
-    // Fallback: use primary series
     const primary = metadata.series.find((s) => s.seriesInstanceUID === metadata.primarySeriesUID);
     if (!primary) return [];
     return selectFromSeries(primary, plan);
@@ -33,47 +52,42 @@ export function selectSlices(metadata: StudyMetadata, plan: SelectionPlan): Sele
 
 function selectFromSeries(
   series: SeriesMetadata,
-  plan: SelectionPlan,
+  params: SamplingParams,
 ): SelectedSlice[] {
-  const [rangeStart, rangeEnd] = plan.sliceRange;
+  const [rangeStart, rangeEnd] = params.sliceRange;
   const axisIdx = varyingAxisIndex(series.anatomicalPlane);
 
-  // Filter slices within the instance number range
   const inRange = series.slices.filter(
     (s) => s.instanceNumber >= rangeStart && s.instanceNumber <= rangeEnd,
   );
 
-  if (inRange.length === 0) {
-    // Fallback: use all slices in the series
-    return applyStrategy(series.slices, plan, axisIdx);
-  }
+  const slicesToSample = inRange.length === 0 ? [...series.slices] : inRange;
+  slicesToSample.sort((a, b) => a.instanceNumber - b.instanceNumber);
 
-  // Sort by instance number
-  inRange.sort((a, b) => a.instanceNumber - b.instanceNumber);
-
-  return applyStrategy(inRange, plan, axisIdx);
+  return applyStrategy(slicesToSample, params, axisIdx);
 }
 
 function applyStrategy(
   slices: import('../dicom/types').SliceMetadata[],
-  plan: SelectionPlan,
+  params: SamplingParams,
   axisIdx: number,
+  maxSlices: number = MAX_SLICES,
 ): SelectedSlice[] {
   let selected: import('../dicom/types').SliceMetadata[];
 
-  switch (plan.samplingStrategy) {
+  switch (params.samplingStrategy) {
     case 'all':
       selected = [...slices];
       break;
 
     case 'every_nth': {
-      const n = plan.samplingParam ?? 2;
+      const n = params.samplingParam ?? 2;
       selected = slices.filter((_, i) => i % n === 0);
       break;
     }
 
     case 'uniform': {
-      const count = Math.min(plan.samplingParam ?? 10, slices.length);
+      const count = Math.min(params.samplingParam ?? 10, slices.length);
       if (count >= slices.length) {
         selected = [...slices];
       } else {
@@ -90,12 +104,12 @@ function applyStrategy(
       selected = [...slices];
   }
 
-  // Hard cap at MAX_SLICES — re-sample uniformly if over
-  if (selected.length > MAX_SLICES) {
-    logger.warn(`[SliceSelector] Hard cap: LLM selected ${selected.length} slices, resampling to ${MAX_SLICES}. Consider narrowing the slice range.`);
+  // Hard cap — re-sample uniformly if over
+  if (selected.length > maxSlices) {
+    logger.warn(`[SliceSelector] Hard cap: ${selected.length} slices → resampling to ${maxSlices}`);
     const resampled: typeof selected = [];
-    for (let i = 0; i < MAX_SLICES; i++) {
-      const idx = Math.round((i * (selected.length - 1)) / (MAX_SLICES - 1));
+    for (let i = 0; i < maxSlices; i++) {
+      const idx = Math.round((i * (selected.length - 1)) / (maxSlices - 1));
       resampled.push(selected[idx]);
     }
     selected = resampled;

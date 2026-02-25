@@ -128,26 +128,32 @@ export function buildSelectionSystemPrompt(): string {
     '',
     '## OUTPUT CONSTRAINTS (MANDATORY)',
     '',
-    '- You MUST select a maximum of 20 slices for the final output',
-    '- If your target range contains more than 20 slices, you MUST use a sampling',
-    '  strategy to reduce to ≤20',
+    '- You may select 1 PRIMARY series (8-12 slices) and 0-2 SUPPLEMENTARY series (3-5 slices each)',
+    '- The total across ALL series MUST be ≤ 20 slices',
+    '- If a range contains more slices than the budget, use a sampling strategy to reduce',
     '- The samplingParam in "uniform" mode means "select exactly this many slices',
     '  evenly spaced across the range"',
-    '- Example: range 1-40 with uniform sampling, samplingParam=15 → 15 evenly',
-    '  spaced slices from the range',
-    '- NEVER set samplingStrategy to "all" if the range exceeds 20 slices',
+    '- NEVER set samplingStrategy to "all" if the range exceeds the per-series budget',
+    '- Scout / localizer series (very few slices, large spacing) should NEVER be selected',
+    '- Only add supplementary series when they provide genuinely different diagnostic',
+    '  information (different plane, different weighting, different phase)',
     '',
     '## Output Format',
     '',
     'Output a JSON object (no markdown fences) with these exact fields:',
-    '- targetSeries: string — the Series Number (e.g. "3"), pick the best diagnostic series',
-    '- sliceRange: [number, number] — inclusive instance number range [start, end]',
-    '- samplingStrategy: "uniform" | "every_nth" | "all" — MUST result in ≤20 slices',
-    '- samplingParam: number — for "uniform": exact count (max 20). For "every_nth": step size. Omit for "all".',
-    '- windowCenter: number — appropriate for the pathology being evaluated',
-    '- windowWidth: number — appropriate for the pathology being evaluated',
-    '- reasoning: string — explain: why this series, why this range, why this windowing',
+    '- reasoning: string — explain: why these series, why these ranges, why this windowing',
+    '- selections: array of objects, each with:',
+    '    - seriesNumber: string — the Series Number (e.g. "3")',
+    '    - role: "primary" | "supplementary"',
+    '    - rationale: string — why this specific series is included',
+    '    - sliceRange: [number, number] — inclusive instance number range [start, end]',
+    '    - samplingStrategy: "uniform" | "every_nth" | "all"',
+    '    - samplingParam: number — for "uniform": exact count. For "every_nth": step size. Omit for "all".',
+    '    - windowCenter: number',
+    '    - windowWidth: number',
+    '- totalImages: number — sum of all slices across selections (must be ≤ 20)',
     '',
+    'The first element in selections MUST be the primary series (role: "primary").',
     'Output ONLY the JSON object, no other text.',
   ].join('\n');
 }
@@ -269,14 +275,8 @@ export function buildAnalysisUserPrompt(
   plan: SelectionPlan,
   sliceLabels: string[],
 ): string {
-  const series = metadata.series.find((s) => String(s.seriesNumber) === plan.targetSeries);
-  const totalSlices = series?.slices.length ?? sliceLabels.length;
-  const seriesDesc = series?.seriesDescription || '(no description)';
-  const samplingDesc = `${plan.samplingStrategy}${plan.samplingParam ? ` (${plan.samplingParam})` : ''}`;
-
   const lines = [
-    `Analyze ONLY the following ${sliceLabels.length} images from ${seriesDesc}.`,
-    `These are slices ${plan.sliceRange[0]}–${plan.sliceRange[1]} of ${totalSlices} in the series, sampled at ${samplingDesc}.`,
+    `Analyze ONLY the following ${sliceLabels.length} images.`,
     '',
     `Clinical question: ${clinicalHint}`,
     '',
@@ -286,39 +286,53 @@ export function buildAnalysisUserPrompt(
   ];
   if (metadata.patientAge) lines.push(`Patient: ${metadata.patientAge} ${metadata.patientSex ?? ''}`);
   lines.push('');
-  if (series) {
-    lines.push(`Viewing Series #${series.seriesNumber}: ${seriesDesc}`);
-    lines.push(`Plane: ${series.anatomicalPlane} | Kernel: ${series.convolutionKernel ?? 'N/A'}`);
-    lines.push(`Total slices in series: ${totalSlices} (instance #${series.instanceNumberRange[0]}–#${series.instanceNumberRange[1]})`);
-    if (series.zCoverageInMm > 0) {
-      lines.push(`Full z-coverage: ${series.zCoverageInMm.toFixed(1)}mm (z=${series.zMin.toFixed(1)} to ${series.zMax.toFixed(1)})`);
-    }
-    if (series.sliceThickness != null) {
-      lines.push(`Slice thickness: ${series.sliceThickness}mm`);
-    }
-    if (series.pixelSpacing) {
-      lines.push(`In-plane resolution: ${series.pixelSpacing[0].toFixed(2)}×${series.pixelSpacing[1].toFixed(2)}mm`);
-    }
-    if (series.estimatedWeighting) {
-      let weightLine = `MRI weighting: ${series.estimatedWeighting}`;
-      if (series.repetitionTime != null && series.echoTime != null) {
-        weightLine += ` (TR:${Math.round(series.repetitionTime)}ms TE:${Math.round(series.echoTime)}ms)`;
+
+  // Describe each series in the plan
+  for (const sel of plan.selections) {
+    const series = metadata.series.find((s) => String(s.seriesNumber) === sel.seriesNumber);
+    const seriesDesc = series?.seriesDescription || `Series #${sel.seriesNumber}`;
+    const totalSlices = series?.slices.length ?? 0;
+    const samplingDesc = `${sel.samplingStrategy}${sel.samplingParam ? ` (${sel.samplingParam})` : ''}`;
+
+    lines.push(`--- ${sel.role.toUpperCase()} SERIES: #${sel.seriesNumber} "${seriesDesc}" ---`);
+    if (series) {
+      lines.push(`Plane: ${series.anatomicalPlane} | Kernel: ${series.convolutionKernel ?? 'N/A'}`);
+      lines.push(`Total slices in series: ${totalSlices} (instance #${series.instanceNumberRange[0]}–#${series.instanceNumberRange[1]})`);
+      if (series.zCoverageInMm > 0) {
+        lines.push(`Full z-coverage: ${series.zCoverageInMm.toFixed(1)}mm (z=${series.zMin.toFixed(1)} to ${series.zMax.toFixed(1)})`);
       }
-      lines.push(weightLine);
+      if (series.sliceThickness != null) {
+        lines.push(`Slice thickness: ${series.sliceThickness}mm`);
+      }
+      if (series.pixelSpacing) {
+        lines.push(`In-plane resolution: ${series.pixelSpacing[0].toFixed(2)}×${series.pixelSpacing[1].toFixed(2)}mm`);
+      }
+      if (series.estimatedWeighting) {
+        let weightLine = `MRI weighting: ${series.estimatedWeighting}`;
+        if (series.repetitionTime != null && series.echoTime != null) {
+          weightLine += ` (TR:${Math.round(series.repetitionTime)}ms TE:${Math.round(series.echoTime)}ms)`;
+        }
+        lines.push(weightLine);
+      }
     }
+    lines.push(`Window: W=${sel.windowWidth} C=${sel.windowCenter}`);
+    lines.push(`Slice selection: instances #${sel.sliceRange[0]}–#${sel.sliceRange[1]}, ${samplingDesc}`);
+    lines.push(`Rationale: ${sel.rationale}`);
+    lines.push('');
   }
-  lines.push(`Window: W=${plan.windowWidth} C=${plan.windowCenter}`);
-  lines.push(`Slice selection: instances #${plan.sliceRange[0]}–#${plan.sliceRange[1]}, ${samplingDesc}`);
+
   lines.push(`Selection reasoning: ${plan.reasoning}`);
   lines.push('');
-  lines.push(`IMPORTANT CONTEXT: You are viewing ${sliceLabels.length} sampled slices from a series of ${totalSlices} total slices. There are gaps between the images you see. A finding visible in one image may span more slices than shown. Account for this sampling when describing extent and when noting limitations.`);
+  lines.push(`IMPORTANT CONTEXT: You are viewing ${sliceLabels.length} sampled slices from ${plan.selections.length} series. There are gaps between the images you see. A finding visible in one image may span more slices than shown. Account for this sampling when describing extent and when noting limitations.`);
+  if (plan.selections.length > 1) {
+    lines.push('Cross-reference findings across series when possible (e.g., confirm a sagittal finding on coronal images).');
+  }
   lines.push('');
   lines.push(`You are provided EXACTLY ${sliceLabels.length} images. Each image is labeled with its series name, slice number, and z-position.`);
   lines.push(`The images in order are:\n${sliceLabels.map((l, i) => `  ${i + 1}. ${l}`).join('\n')}`);
   lines.push('');
-  lines.push(`When referencing findings, cite the slice number (e.g., "Slice 45/${totalSlices}") so the reader can navigate to it in the viewer.`);
-  lines.push(`You may reference a range (e.g., "Slices 45–66/${totalSlices}").`);
-  lines.push(`IMPORTANT: Only reference slice numbers from the list above. Do NOT invent or guess slice numbers that were not provided.`);
+  lines.push('When referencing findings, cite the series and slice number (e.g., "Series #3 Slice 45/187") so the reader can navigate to it in the viewer.');
+  lines.push('IMPORTANT: Only reference slice numbers from the list above. Do NOT invent or guess slice numbers that were not provided.');
 
   return lines.join('\n');
 }

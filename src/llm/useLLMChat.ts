@@ -1,8 +1,8 @@
 import { useState, useCallback, useRef } from 'react';
 import type { StudyMetadata } from '../dicom/types';
-import type { SelectionPlan, ChatMessage, ProviderConfig, ViewportContext } from './types';
+import type { SelectionPlan, SeriesSelection, ChatMessage, ProviderConfig, ViewportContext } from './types';
 import { createLLMService } from './LLMServiceFactory';
-import { selectSlices } from '../filtering/SliceSelector';
+import { selectSlicesForSelection } from '../filtering/SliceSelector';
 import { exportSlicesToJpeg } from '../filtering/SliceExporter';
 import { logger } from '../utils/logger';
 
@@ -22,6 +22,7 @@ export interface SliceMapping {
   imageId: string;
   zPosition: number;
   label: string;        // e.g. "SAG PD FAT SAT — Slice 45/187 (z=-120mm)"
+  seriesNumber: string; // Series number for navigation
 }
 
 export interface PipelineState {
@@ -70,57 +71,125 @@ function updateStep(
 }
 
 /**
- * Fix truly invalid LLM plans without overriding good focused ranges.
- * - Inverted range → swap
- * - Out-of-bounds → clamp to series instance range
- * - samplingParam exceeds range → reduce to fit
- * - "all" on >20 slices → switch to uniform
- * - Missing samplingParam for uniform → default to 15
+ * Fix a single SeriesSelection against its series metadata.
  */
-function fixSelectionPlan(plan: SelectionPlan, metadata: StudyMetadata): SelectionPlan {
-  const series = metadata.series.find((s) => String(s.seriesNumber) === plan.targetSeries);
-  if (!series) return plan;
+function fixSelection(sel: SeriesSelection, metadata: StudyMetadata, maxBudget: number): SeriesSelection {
+  const series = metadata.series.find((s) => String(s.seriesNumber) === sel.seriesNumber);
+  if (!series) return sel;
 
   const [minInst, maxInst] = series.instanceNumberRange;
-  let [start, end] = plan.sliceRange;
+  let [start, end] = sel.sliceRange;
 
-  // Swap if inverted
   if (start > end) [start, end] = [end, start];
-
-  // Clamp to valid bounds
   start = Math.max(minInst, start);
   end = Math.min(maxInst, end);
 
-  let { samplingStrategy, samplingParam } = plan;
+  let { samplingStrategy, samplingParam } = sel;
   const rangeSize = end - start + 1;
 
-  // Fix: "all" on a large range → switch to uniform
-  if (samplingStrategy === 'all' && rangeSize > 20) {
+  if (samplingStrategy === 'all' && rangeSize > maxBudget) {
     samplingStrategy = 'uniform';
-    samplingParam = 15;
-    logger.warn(`[PlanFix] "all" on ${rangeSize} slices → switched to uniform(15)`);
+    samplingParam = maxBudget;
+    logger.warn(`[PlanFix] "${sel.seriesNumber}" "all" on ${rangeSize} slices → uniform(${maxBudget})`);
   }
 
-  // Fix: uniform without param → default to 15
   if (samplingStrategy === 'uniform' && (samplingParam == null || samplingParam < 1)) {
-    samplingParam = 15;
-    logger.warn('[PlanFix] Missing samplingParam for uniform, defaulting to 15');
+    samplingParam = Math.min(maxBudget, rangeSize);
+    logger.warn(`[PlanFix] "${sel.seriesNumber}" missing samplingParam → ${samplingParam}`);
   }
 
-  // Ensure samplingParam doesn't exceed range size
   if (samplingStrategy === 'uniform' && samplingParam != null && samplingParam > rangeSize) {
     samplingParam = rangeSize;
   }
 
-  if (start !== plan.sliceRange[0] || end !== plan.sliceRange[1]) {
-    logger.warn(`[PlanFix] Clamped range: [${plan.sliceRange}] → [${start},${end}]`);
+  if (samplingStrategy === 'uniform' && samplingParam != null && samplingParam > maxBudget) {
+    samplingParam = maxBudget;
   }
 
+  if (start !== sel.sliceRange[0] || end !== sel.sliceRange[1]) {
+    logger.warn(`[PlanFix] "${sel.seriesNumber}" clamped: [${sel.sliceRange}] → [${start},${end}]`);
+  }
+
+  return { ...sel, sliceRange: [start, end], samplingStrategy, samplingParam };
+}
+
+/**
+ * Estimate the number of slices a selection will produce.
+ */
+function estimateSliceCount(sel: SeriesSelection): number {
+  const rangeSize = sel.sliceRange[1] - sel.sliceRange[0] + 1;
+  if (sel.samplingStrategy === 'uniform' && sel.samplingParam != null) {
+    return Math.min(sel.samplingParam, rangeSize);
+  }
+  if (sel.samplingStrategy === 'every_nth' && sel.samplingParam != null && sel.samplingParam > 0) {
+    return Math.ceil(rangeSize / sel.samplingParam);
+  }
+  return rangeSize;
+}
+
+/**
+ * Fix all selections in a plan. Enforce total ≤ 20 (reduce supplementary first).
+ * Re-populate legacy fields from selections[0].
+ */
+function fixSelectionPlan(plan: SelectionPlan, metadata: StudyMetadata): SelectionPlan {
+  const MAX_TOTAL = 20;
+
+  // Fix each selection individually with generous per-selection budget first
+  let fixedSelections = plan.selections.map((sel) =>
+    fixSelection(sel, metadata, MAX_TOTAL),
+  );
+
+  // Enforce total ≤ 20: reduce supplementary series first, then primary
+  let total = fixedSelections.reduce((sum, s) => sum + estimateSliceCount(s), 0);
+  if (total > MAX_TOTAL) {
+    // Reduce supplementary selections first (in reverse order)
+    for (let i = fixedSelections.length - 1; i >= 0 && total > MAX_TOTAL; i--) {
+      if (fixedSelections[i].role !== 'supplementary') continue;
+      const current = estimateSliceCount(fixedSelections[i]);
+      const excess = total - MAX_TOTAL;
+      const newCount = Math.max(2, current - excess);
+      fixedSelections[i] = {
+        ...fixedSelections[i],
+        samplingStrategy: 'uniform',
+        samplingParam: newCount,
+      };
+      total = fixedSelections.reduce((sum, s) => sum + estimateSliceCount(s), 0);
+      logger.warn(`[PlanFix] Reduced supplementary series #${fixedSelections[i].seriesNumber} to ${newCount} slices`);
+    }
+
+    // If still over, remove supplementary selections entirely
+    if (total > MAX_TOTAL) {
+      const primaryOnly = fixedSelections.filter((s) => s.role === 'primary');
+      if (primaryOnly.length > 0) {
+        fixedSelections = primaryOnly;
+        total = fixedSelections.reduce((sum, s) => sum + estimateSliceCount(s), 0);
+        logger.warn('[PlanFix] Removed all supplementary selections to fit budget');
+      }
+    }
+
+    // If primary alone exceeds, cap it
+    if (total > MAX_TOTAL && fixedSelections.length > 0) {
+      fixedSelections[0] = {
+        ...fixedSelections[0],
+        samplingStrategy: 'uniform',
+        samplingParam: MAX_TOTAL,
+      };
+      logger.warn(`[PlanFix] Capped primary to ${MAX_TOTAL} slices`);
+    }
+  }
+
+  // Re-populate legacy fields from selections[0]
+  const primary = fixedSelections[0];
   return {
     ...plan,
-    sliceRange: [start, end],
-    samplingStrategy,
-    samplingParam,
+    selections: fixedSelections,
+    totalImages: fixedSelections.reduce((sum, s) => sum + estimateSliceCount(s), 0),
+    targetSeries: primary.seriesNumber,
+    sliceRange: primary.sliceRange,
+    windowCenter: primary.windowCenter,
+    windowWidth: primary.windowWidth,
+    samplingStrategy: primary.samplingStrategy,
+    samplingParam: primary.samplingParam,
   };
 }
 
@@ -248,18 +317,65 @@ export function useLLMChat(
       logger.group('[DICOMassist] Analysis Pipeline (continued)');
       logger.log('Confirmed plan:', adjustedPlan);
 
-      // Step 2: Select slices
+      // Step 2: Select slices across all series
       setPipeline((p) => p && ({
         ...p,
-        steps: updateStep(p.steps, 'select', { status: 'active', detail: `Applying ${adjustedPlan.samplingStrategy} strategy...` }),
+        steps: updateStep(p.steps, 'select', { status: 'active', detail: `Selecting from ${adjustedPlan.selections.length} series...` }),
       }));
-      const selectedSlices = selectSlices(metadata, adjustedPlan);
-      logger.log(`Selected ${selectedSlices.length} slices:`, selectedSlices.map((s) => ({
-        instance: s.instanceNumber,
-        z: s.zPosition.toFixed(1),
-      })));
 
-      if (selectedSlices.length === 0) {
+      const allMappings: SliceMapping[] = [];
+      const allBlobs: Blob[] = [];
+      let totalSelectedCount = 0;
+      let grandTotalSlices = 0;
+
+      // Step 3: Export to JPEG (per-selection with per-selection W/L)
+      setStatus('exporting');
+      const t2 = performance.now();
+
+      for (const sel of adjustedPlan.selections) {
+        const selectedSlices = selectSlicesForSelection(metadata, sel);
+        logger.log(`[${sel.role}] Series #${sel.seriesNumber}: selected ${selectedSlices.length} slices`);
+
+        if (selectedSlices.length === 0) continue;
+
+        const series = metadata.series.find((s) => String(s.seriesNumber) === sel.seriesNumber);
+        const totalSlicesInSeries = series?.slices.length ?? selectedSlices.length;
+        const seriesDesc = series?.seriesDescription || `Series #${sel.seriesNumber}`;
+        const axisLetter = series?.anatomicalPlane === 'sagittal' ? 'x'
+          : series?.anatomicalPlane === 'coronal' ? 'y' : 'z';
+
+        totalSelectedCount += selectedSlices.length;
+        grandTotalSlices += totalSlicesInSeries;
+
+        setPipeline((p) => p && ({
+          ...p,
+          steps: updateStep(p.steps, 'export', { status: 'active', detail: `Rendering Series #${sel.seriesNumber} (${selectedSlices.length} slices, W:${sel.windowWidth} C:${sel.windowCenter})...` }),
+        }));
+
+        const exported = await exportSlicesToJpeg(selectedSlices, sel.windowCenter, sel.windowWidth);
+        if (abortRef.current) { logger.groupEnd(); return; }
+
+        for (const e of exported) {
+          const globalIdx = allBlobs.length + 1;
+          allBlobs.push(e.blob);
+          allMappings.push({
+            imageIndex: globalIdx,
+            instanceNumber: e.instanceNumber,
+            imageId: selectedSlices.find((s) => s.instanceNumber === e.instanceNumber)?.imageId ?? '',
+            zPosition: e.zPosition,
+            label: `${seriesDesc} — Slice ${e.instanceNumber}/${totalSlicesInSeries} (${axisLetter}=${e.zPosition.toFixed(0)}mm)`,
+            seriesNumber: sel.seriesNumber,
+          });
+        }
+
+        if (exported.length < selectedSlices.length) {
+          logger.warn(`[Export] Series #${sel.seriesNumber}: ${selectedSlices.length - exported.length} slices failed to render`);
+        }
+      }
+
+      const t3 = performance.now();
+
+      if (allBlobs.length === 0) {
         logger.groupEnd();
         setPipeline((p) => p && ({
           ...p,
@@ -268,58 +384,26 @@ export function useLLMChat(
         throw new Error('No slices matched the selection plan. Try a different prompt.');
       }
 
-      const targetSeries = metadata.series.find((s) => String(s.seriesNumber) === adjustedPlan.targetSeries);
-      const totalSlices = targetSeries?.slices.length ?? selectedSlices.length;
-      const seriesDesc = targetSeries?.seriesDescription || `Series #${adjustedPlan.targetSeries}`;
-      const axisLetter = targetSeries?.anatomicalPlane === 'sagittal' ? 'x'
-        : targetSeries?.anatomicalPlane === 'coronal' ? 'y' : 'z';
-      const sliceDetail = `${selectedSlices.length} slices (${axisLetter}: ${selectedSlices[0].zPosition.toFixed(0)} to ${selectedSlices[selectedSlices.length - 1].zPosition.toFixed(0)}mm)`;
-
+      const sliceDetail = `${totalSelectedCount} slices from ${adjustedPlan.selections.length} series`;
       setPipeline((p) => p && ({
         ...p,
-        sliceCount: selectedSlices.length,
-        totalSlices,
+        sliceCount: totalSelectedCount,
+        totalSlices: grandTotalSlices,
         steps: updateStep(p.steps, 'select', { status: 'done', detail: sliceDetail }),
       }));
 
-      // Step 3: Export to JPEG
-      setStatus('exporting');
-      const t2 = performance.now();
-      setPipeline((p) => p && ({
-        ...p,
-        steps: updateStep(p.steps, 'export', { status: 'active', detail: `Rendering ${selectedSlices.length} slices with W:${adjustedPlan.windowWidth} C:${adjustedPlan.windowCenter}...` }),
-      }));
-
-      const exported = await exportSlicesToJpeg(selectedSlices, adjustedPlan.windowCenter, adjustedPlan.windowWidth);
-      const t3 = performance.now();
-      if (abortRef.current) { logger.groupEnd(); return; }
-
-      // Build mappings from EXPORTED results (not selectedSlices) to stay in sync
-      // If any image fails to render, it's excluded from both blobs and labels
-      const mappings: SliceMapping[] = exported.map((e, i) => ({
-        imageIndex: i + 1,
-        instanceNumber: e.instanceNumber,
-        imageId: selectedSlices.find((s) => s.instanceNumber === e.instanceNumber)?.imageId ?? '',
-        zPosition: e.zPosition,
-        label: `${seriesDesc} — Slice ${e.instanceNumber}/${totalSlices} (${axisLetter}=${e.zPosition.toFixed(0)}mm)`,
-      }));
-
-      const sizes = exported.map((e) => `${(e.blob.size / 1024).toFixed(0)}KB`);
-      const totalSize = exported.reduce((sum, e) => sum + e.blob.size, 0);
-      logger.log(`Exported ${exported.length} JPEG images (sizes: ${sizes.join(', ')})`);
-      logger.log('Slice mappings:', mappings.map((m) => `${m.label}`));
-
-      if (exported.length < selectedSlices.length) {
-        logger.warn(`[Export] ${selectedSlices.length - exported.length} slices failed to render — labels rebuilt from successful exports`);
-      }
+      const sizes = allBlobs.map((b) => `${(b.size / 1024).toFixed(0)}KB`);
+      const totalSize = allBlobs.reduce((sum, b) => sum + b.size, 0);
+      logger.log(`Exported ${allBlobs.length} JPEG images (sizes: ${sizes.join(', ')})`);
+      logger.log('Slice mappings:', allMappings.map((m) => m.label));
 
       setPipeline((p) => p && ({
         ...p,
         exportedSizes: sizes,
-        sliceMappings: mappings,
+        sliceMappings: allMappings,
         steps: updateStep(p.steps, 'export', {
           status: 'done',
-          detail: `${exported.length} images (${(totalSize / 1024).toFixed(0)}KB total)`,
+          detail: `${allBlobs.length} images (${(totalSize / 1024).toFixed(0)}KB total)`,
           durationMs: Math.round(t3 - t2),
         }),
       }));
@@ -329,13 +413,12 @@ export function useLLMChat(
       const t4 = performance.now();
       setPipeline((p) => p && ({
         ...p,
-        steps: updateStep(p.steps, 'analyze', { status: 'active', detail: `Sending ${exported.length} images to LLM...` }),
+        steps: updateStep(p.steps, 'analyze', { status: 'active', detail: `Sending ${allBlobs.length} images to LLM...` }),
       }));
 
-      const blobs = exported.map((e) => e.blob);
-      const sliceLabels = mappings.map((m) => m.label);
-      logger.log(`Call 2 — Sending ${blobs.length} images to LLM (${sliceLabels.join(', ')})...`);
-      const analysisText = await service.analyzeSlices(blobs, metadata, hint, adjustedPlan, sliceLabels);
+      const sliceLabels = allMappings.map((m) => m.label);
+      logger.log(`Call 2 — Sending ${allBlobs.length} images to LLM (${sliceLabels.join(', ')})...`);
+      const analysisText = await service.analyzeSlices(allBlobs, metadata, hint, adjustedPlan, sliceLabels);
       const t5 = performance.now();
       if (abortRef.current) { logger.groupEnd(); return; }
 

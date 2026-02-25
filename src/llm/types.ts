@@ -1,13 +1,27 @@
 import type { StudyMetadata } from '../dicom/types';
 
-export interface SelectionPlan {
-  targetSeries: string;           // Series Number as string, e.g., "3"
-  sliceRange: [number, number];   // Inclusive instance number range [start, end]
+export interface SeriesSelection {
+  seriesNumber: string;
+  role: 'primary' | 'supplementary';
+  rationale: string;
+  sliceRange: [number, number];
   samplingStrategy: 'every_nth' | 'uniform' | 'all';
   samplingParam?: number;
+  windowWidth: number;
+  windowCenter: number;
+}
+
+export interface SelectionPlan {
+  reasoning: string;
+  selections: SeriesSelection[];
+  totalImages: number;
+  // Legacy shortcuts from selections[0] — used by App.tsx viewport logic
+  targetSeries: string;
+  sliceRange: [number, number];
   windowCenter: number;
   windowWidth: number;
-  reasoning: string;
+  samplingStrategy: 'every_nth' | 'uniform' | 'all';
+  samplingParam?: number;
 }
 
 export interface ChatMessage {

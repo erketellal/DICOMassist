@@ -281,14 +281,15 @@ export default function App() {
     startAnalysis(hint, viewportContext);
   }, [startAnalysis, studyMetadata]);
 
-  const navigateTargetRef = useRef<{ instanceNumber: number; imageId: string } | null>(null);
+  const navigateTargetRef = useRef<{ instanceNumber: number; imageId: string; seriesNumber: string } | null>(null);
 
   const handleNavigateToSlice = useCallback((mapping: SliceMapping) => {
     if (!studyMetadata || !currentPlan) return;
 
-    // Find the target series from the plan that generated this mapping
+    // Use the mapping's seriesNumber (multi-series aware) to find the correct series
+    const seriesNum = mapping.seriesNumber || currentPlan.targetSeries;
     const targetSeries = studyMetadata.series.find(
-      (s) => String(s.seriesNumber) === currentPlan.targetSeries,
+      (s) => String(s.seriesNumber) === seriesNum,
     );
     if (!targetSeries) return;
 
@@ -298,7 +299,7 @@ export default function App() {
     if (needsSeriesSwitch) {
       logger.log(`[Navigate] Switching from series ${activeSeriesUID} → ${targetSeries.seriesInstanceUID} (${targetSeries.seriesDescription})`);
       // Store the target so we can scroll after series loads
-      navigateTargetRef.current = { instanceNumber: mapping.instanceNumber, imageId: mapping.imageId };
+      navigateTargetRef.current = { instanceNumber: mapping.instanceNumber, imageId: mapping.imageId, seriesNumber: seriesNum };
       const targetImageIds = targetSeries.slices.map((s) => s.imageId);
       setImageIds(targetImageIds);
       setActiveSeriesUID(targetSeries.seriesInstanceUID);
@@ -316,10 +317,10 @@ export default function App() {
   // After a series switch triggered by slice navigation, scroll to the target slice
   useEffect(() => {
     const target = navigateTargetRef.current;
-    if (!target || !studyMetadata || !currentPlan) return;
+    if (!target || !studyMetadata) return;
 
     const targetSeries = studyMetadata.series.find(
-      (s) => String(s.seriesNumber) === currentPlan.targetSeries,
+      (s) => String(s.seriesNumber) === target.seriesNumber,
     );
     if (!targetSeries || targetSeries.seriesInstanceUID !== activeSeriesUID) return;
 
@@ -335,7 +336,7 @@ export default function App() {
     };
     const timer = setTimeout(tryScroll, 100);
     return () => clearTimeout(timer);
-  }, [activeSeriesUID, studyMetadata, currentPlan]);
+  }, [activeSeriesUID, studyMetadata]);
 
   function scrollToSlice(
     instanceNumber: number,

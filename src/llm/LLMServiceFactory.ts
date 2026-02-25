@@ -1,5 +1,5 @@
 import type { StudyMetadata } from '../dicom/types';
-import type { SelectionPlan, ChatMessage, ProviderConfig, LLMService, ViewportContext } from './types';
+import type { SelectionPlan, SeriesSelection, ChatMessage, ProviderConfig, LLMService, ViewportContext } from './types';
 import {
   buildSelectionSystemPrompt,
   buildSelectionUserPrompt,
@@ -31,6 +31,34 @@ async function blobToBase64(blob: Blob): Promise<string> {
   return btoa(binary);
 }
 
+function parseSeriesSelection(raw: Record<string, unknown>): SeriesSelection {
+  return {
+    seriesNumber: String(raw.seriesNumber),
+    role: (raw.role as string) === 'supplementary' ? 'supplementary' : 'primary',
+    rationale: String(raw.rationale ?? ''),
+    sliceRange: [Number((raw.sliceRange as number[])[0]), Number((raw.sliceRange as number[])[1])],
+    samplingStrategy: (raw.samplingStrategy as string) ?? 'uniform',
+    samplingParam: raw.samplingParam != null ? Number(raw.samplingParam) : undefined,
+    windowWidth: Number(raw.windowWidth),
+    windowCenter: Number(raw.windowCenter),
+  };
+}
+
+function populateLegacyFields(selections: SeriesSelection[], reasoning: string, totalImages: number): SelectionPlan {
+  const primary = selections[0];
+  return {
+    reasoning,
+    selections,
+    totalImages,
+    targetSeries: primary.seriesNumber,
+    sliceRange: primary.sliceRange,
+    windowCenter: primary.windowCenter,
+    windowWidth: primary.windowWidth,
+    samplingStrategy: primary.samplingStrategy,
+    samplingParam: primary.samplingParam,
+  };
+}
+
 function parseSelectionPlan(raw: string): SelectionPlan {
   let json: Record<string, unknown>;
   try {
@@ -41,21 +69,35 @@ function parseSelectionPlan(raw: string): SelectionPlan {
       'Try a more specific clinical prompt (e.g., "Evaluate for lung nodules") or switch to Claude.',
     );
   }
+
+  // New multi-series format: { reasoning, selections: [...], totalImages }
+  if (Array.isArray(json.selections) && json.selections.length > 0) {
+    const selections = (json.selections as Record<string, unknown>[]).map(parseSeriesSelection);
+    const reasoning = String(json.reasoning ?? '');
+    const totalImages = json.totalImages != null ? Number(json.totalImages) : 0;
+    return populateLegacyFields(selections, reasoning, totalImages);
+  }
+
+  // Legacy single-series format: { targetSeries, sliceRange, ... }
   if (!json.targetSeries || !json.sliceRange) {
     throw new Error(
       'The LLM response is missing required fields (targetSeries, sliceRange). ' +
       'Try a more specific clinical prompt or a larger model.',
     );
   }
-  return {
-    targetSeries: String(json.targetSeries),
+
+  const selection: SeriesSelection = {
+    seriesNumber: String(json.targetSeries),
+    role: 'primary',
+    rationale: String(json.reasoning ?? ''),
     sliceRange: [Number((json.sliceRange as number[])[0]), Number((json.sliceRange as number[])[1])],
     samplingStrategy: (json.samplingStrategy as string) ?? 'uniform',
     samplingParam: json.samplingParam != null ? Number(json.samplingParam) : undefined,
     windowCenter: Number(json.windowCenter),
     windowWidth: Number(json.windowWidth),
-    reasoning: String(json.reasoning ?? ''),
   };
+
+  return populateLegacyFields([selection], selection.rationale, 0);
 }
 
 // --- Claude Service ---
