@@ -72,7 +72,7 @@ class ClaudeService implements LLMService {
     const response = await this.callClaude({
       system: buildSelectionSystemPrompt(),
       messages: [{ role: 'user', content: buildSelectionUserPrompt(metadata, clinicalHint, viewportContext) }],
-      temperature: 0.1,
+      temperature: 0,
       maxTokens: 1024,
     });
     return parseSelectionPlan(response);
@@ -113,7 +113,7 @@ class ClaudeService implements LLMService {
     return this.callClaude({
       system: buildAnalysisSystemPrompt(),
       messages: [{ role: 'user', content }],
-      temperature: 0.5,
+      temperature: 0,
       maxTokens: 4096,
     });
   }
@@ -127,7 +127,7 @@ class ClaudeService implements LLMService {
     return this.callClaude({
       system: buildFollowUpSystemPrompt() + '\n\nStudy context: ' + metadata.studyDescription,
       messages,
-      temperature: 0.5,
+      temperature: 0,
       maxTokens: 4096,
     });
   }
@@ -226,6 +226,7 @@ class OllamaService implements LLMService {
         model: this.textModel,
         messages,
         stream: false,
+        options: { temperature: 0 },
       }),
       signal: AbortSignal.timeout(300_000),
     });
@@ -263,6 +264,7 @@ class OllamaService implements LLMService {
           model: params.model,
           messages,
           stream: false,
+          options: { temperature: 0 },
         }),
         signal: AbortSignal.timeout(300_000),
       });
