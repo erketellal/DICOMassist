@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { X, CheckCircle, XCircle, Loader2, Download, ChevronDown, Copy, Check, RefreshCw } from 'lucide-react';
-import type { ProviderConfig, ProviderType } from '../llm/types';
+import type { ProviderConfig, ProviderType, ClaudeConfig, OllamaConfig, LMStudioConfig } from '../llm/types';
 import {
   pingOllama,
   fetchOllamaModels,
@@ -11,11 +11,13 @@ import {
   type LMStudioModelInfo,
 } from '../llm/LLMServiceFactory';
 
+type ConfigChangeHandler = (config: ProviderConfig) => void;
+
 interface SettingsPanelProps {
   open: boolean;
   onClose: () => void;
   config: ProviderConfig;
-  onConfigChange: (config: ProviderConfig) => void;
+  onConfigChange: ConfigChangeHandler;
 }
 
 interface RecommendedModel {
@@ -39,15 +41,7 @@ function formatSize(bytes: number): string {
 }
 
 export default function SettingsPanel({ open, onClose, config, onConfigChange }: SettingsPanelProps) {
-  const [ollamaStatus, setOllamaStatus] = useState<'unknown' | 'checking' | 'online' | 'offline'>('unknown');
-  const [installedModels, setInstalledModels] = useState<OllamaModelInfo[]>([]);
-  const [pulling, setPulling] = useState<{ model: string; status: string; percent: number | null } | null>(null);
-  const [lmStudioStatus, setLmStudioStatus] = useState<'unknown' | 'checking' | 'online' | 'offline'>('unknown');
-  const [lmStudioModels, setLmStudioModels] = useState<LMStudioModelInfo[]>([]);
   const panelRef = useRef<HTMLDivElement>(null);
-
-  const baseUrl = config.provider === 'ollama' ? config.url ?? 'http://localhost:11434' : 'http://localhost:11434';
-  const lmStudioBaseUrl = config.provider === 'lmstudio' ? config.url ?? 'http://localhost:1234/v1' : 'http://localhost:1234/v1';
 
   // Close on outside click
   useEffect(() => {
@@ -60,58 +54,6 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, [open, onClose]);
-
-  const refreshModels = useCallback(async () => {
-    setOllamaStatus('checking');
-    const online = await pingOllama(baseUrl);
-    setOllamaStatus(online ? 'online' : 'offline');
-    if (online) {
-      const models = await fetchOllamaModels(baseUrl);
-      setInstalledModels(models);
-    } else {
-      setInstalledModels([]);
-    }
-  }, [baseUrl]);
-
-  const refreshLMStudio = useCallback(async () => {
-    setLmStudioStatus('checking');
-    const online = await pingLMStudio(lmStudioBaseUrl);
-    setLmStudioStatus(online ? 'online' : 'offline');
-    if (online) {
-      const models = await fetchLMStudioModels(lmStudioBaseUrl);
-      setLmStudioModels(models);
-    } else {
-      setLmStudioModels([]);
-    }
-  }, [lmStudioBaseUrl]);
-
-  // Check Ollama when panel opens or provider changes to ollama
-  useEffect(() => {
-    if (open && config.provider === 'ollama') {
-      refreshModels();
-    }
-  }, [open, config.provider, refreshModels]);
-
-  // Check LM Studio when panel opens or provider changes to lmstudio
-  useEffect(() => {
-    if (open && config.provider === 'lmstudio') {
-      refreshLMStudio();
-    }
-  }, [open, config.provider, refreshLMStudio]);
-
-  const handlePull = async (modelName: string) => {
-    setPulling({ model: modelName, status: 'Starting...', percent: null });
-    const success = await pullOllamaModel(
-      modelName,
-      (status, percent) => setPulling({ model: modelName, status, percent }),
-      baseUrl,
-    );
-    if (success) {
-      await refreshModels();
-    }
-    // Keep the final status visible briefly
-    setTimeout(() => setPulling(null), 1500);
-  };
 
   if (!open) return null;
 
@@ -127,16 +69,6 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
       onConfigChange({ provider: 'lmstudio' });
     }
   };
-
-  const isInstalled = (name: string) =>
-    installedModels.some((m) => m.name === name || m.name === name.replace(':latest', '') || m.name + ':latest' === name);
-
-  const textModel = config.provider === 'ollama' ? config.textModel || 'alibayram/medgemma:4b' : 'alibayram/medgemma:4b';
-  const visionModel = config.provider === 'ollama' ? config.visionModel || 'llava:7b' : 'llava:7b';
-  const lmStudioText = config.provider === 'lmstudio' ? config.textModel || 'local-model' : 'local-model';
-  const lmStudioVision = config.provider === 'lmstudio'
-    ? config.visionModel || config.textModel || 'local-model'
-    : 'local-model';
 
   return (
     <div className="fixed inset-0 z-40" onClick={onClose}>
@@ -185,285 +117,341 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
             </div>
           </div>
 
-          {/* Claude fields */}
           {config.provider === 'claude' && (
-            <div>
-              <label className="text-xs text-neutral-400 block mb-1.5">API Key</label>
-              <input
-                type="password"
-                value={config.apiKey}
-                onChange={(e) => onConfigChange({ ...config, apiKey: e.target.value })}
-                placeholder="sk-ant-..."
-                className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-blue-500"
-              />
-              <p className="text-[10px] text-neutral-500 mt-1">
-                Stored in localStorage only. Never sent to our servers.
-              </p>
-            </div>
+            <ClaudeFields config={config} onConfigChange={onConfigChange} />
           )}
-
-          {/* Ollama fields */}
           {config.provider === 'ollama' && (
-            <>
-              {/* Status */}
-              <div className="flex items-center gap-2 text-xs">
-                {ollamaStatus === 'checking' && (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
-                    <span className="text-neutral-400">Connecting...</span>
-                  </>
-                )}
-                {ollamaStatus === 'online' && (
-                  <>
-                    <CheckCircle className="w-3.5 h-3.5 text-green-400" />
-                    <span className="text-green-400">Ollama running</span>
-                    <span className="text-neutral-500">({installedModels.length} model{installedModels.length !== 1 ? 's' : ''})</span>
-                  </>
-                )}
-                {ollamaStatus === 'offline' && (
-                  <>
-                    <XCircle className="w-3.5 h-3.5 text-red-400" />
-                    <span className="text-red-400">Ollama not running</span>
-                  </>
-                )}
-                <button
-                  onClick={refreshModels}
-                  className="text-neutral-500 hover:text-neutral-300 ml-auto text-xs"
-                >
-                  Refresh
-                </button>
-              </div>
-
-              {ollamaStatus === 'offline' && (
-                <OllamaOfflineHelp onRetry={refreshModels} />
-              )}
-
-              {/* Ollama URL */}
-              <div>
-                <label className="text-xs text-neutral-400 block mb-1.5">Ollama URL</label>
-                <input
-                  type="text"
-                  value={config.url ?? 'http://localhost:11434'}
-                  onChange={(e) => onConfigChange({ ...config, url: e.target.value })}
-                  placeholder="http://localhost:11434"
-                  className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-blue-500"
-                />
-              </div>
-
-              {ollamaStatus === 'online' && (
-                <>
-                  {/* Text Model (Call 1) */}
-                  <div>
-                    <label className="text-xs text-neutral-400 block mb-1.5">
-                      Text Model <span className="text-neutral-600">(Call 1: slice planning)</span>
-                    </label>
-                    <ModelDropdown
-                      value={textModel}
-                      models={installedModels}
-                      onChange={(m) => onConfigChange({ ...config, textModel: m })}
-                    />
-                  </div>
-
-                  {/* Vision Model (Call 2) */}
-                  <div>
-                    <label className="text-xs text-neutral-400 block mb-1.5">
-                      Vision Model <span className="text-neutral-600">(Call 2: image analysis)</span>
-                    </label>
-                    <ModelDropdown
-                      value={visionModel}
-                      models={installedModels}
-                      onChange={(m) => onConfigChange({ ...config, visionModel: m })}
-                    />
-                  </div>
-
-                  {/* Recommended Models */}
-                  <div>
-                    <label className="text-xs text-neutral-400 block mb-2">Available Models</label>
-                    <div className="space-y-1.5">
-                      {RECOMMENDED_MODELS.map((rm) => {
-                        const installed = isInstalled(rm.name);
-                        const isPulling = pulling?.model === rm.name;
-                        return (
-                          <div
-                            key={rm.name}
-                            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs ${
-                              installed ? 'bg-neutral-900' : 'bg-neutral-900/50 border border-dashed border-neutral-700'
-                            }`}
-                          >
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-neutral-200 font-medium">{rm.label}</span>
-                                <RoleBadge role={rm.role} />
-                                {installed && <CheckCircle className="w-3 h-3 text-green-500" />}
-                              </div>
-                              <p className="text-neutral-500 text-[10px] mt-0.5">{rm.desc}</p>
-                            </div>
-                            {!installed && !isPulling && (
-                              <button
-                                onClick={() => handlePull(rm.name)}
-                                disabled={!!pulling}
-                                className="shrink-0 flex items-center gap-1 px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-medium disabled:opacity-30"
-                              >
-                                <Download className="w-3 h-3" />
-                                Pull
-                              </button>
-                            )}
-                            {isPulling && (
-                              <div className="shrink-0 text-right">
-                                <div className="flex items-center gap-1 text-blue-400">
-                                  <Loader2 className="w-3 h-3 animate-spin" />
-                                  <span className="text-[10px]">{pulling.percent != null ? `${pulling.percent}%` : '...'}</span>
-                                </div>
-                              </div>
-                            )}
-                            {installed && !isPulling && (
-                              <div className="shrink-0 flex gap-1">
-                                {(rm.role === 'text' || rm.role === 'both') && (
-                                  <button
-                                    onClick={() => onConfigChange({ ...config, textModel: rm.name })}
-                                    className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                                      textModel === rm.name
-                                        ? 'bg-purple-600 text-white'
-                                        : 'bg-neutral-700 text-neutral-400 hover:text-neutral-200'
-                                    }`}
-                                  >
-                                    Text
-                                  </button>
-                                )}
-                                {(rm.role === 'vision' || rm.role === 'both') && (
-                                  <button
-                                    onClick={() => onConfigChange({ ...config, visionModel: rm.name })}
-                                    className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                                      visionModel === rm.name
-                                        ? 'bg-teal-600 text-white'
-                                        : 'bg-neutral-700 text-neutral-400 hover:text-neutral-200'
-                                    }`}
-                                  >
-                                    Vision
-                                  </button>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Pull progress bar */}
-                  {pulling && (
-                    <div className="bg-neutral-900 rounded-lg px-3 py-2">
-                      <div className="flex items-center justify-between text-xs mb-1">
-                        <span className="text-neutral-300 font-mono">{pulling.model}</span>
-                        <span className="text-neutral-500">{pulling.percent != null ? `${pulling.percent}%` : pulling.status}</span>
-                      </div>
-                      {pulling.percent != null && (
-                        <div className="h-1 bg-neutral-700 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-blue-500 rounded-full transition-all duration-300"
-                            style={{ width: `${pulling.percent}%` }}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </>
-              )}
-            </>
+            <OllamaFields config={config} onConfigChange={onConfigChange} />
           )}
-
-          {/* LM Studio fields */}
           {config.provider === 'lmstudio' && (
-            <>
-              {/* Status */}
-              <div className="flex items-center gap-2 text-xs">
-                {lmStudioStatus === 'checking' && (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
-                    <span className="text-neutral-400">Connecting...</span>
-                  </>
-                )}
-                {lmStudioStatus === 'online' && (
-                  <>
-                    <CheckCircle className="w-3.5 h-3.5 text-green-400" />
-                    <span className="text-green-400">LM Studio running</span>
-                    <span className="text-neutral-500">({lmStudioModels.length} model{lmStudioModels.length !== 1 ? 's' : ''} loaded)</span>
-                  </>
-                )}
-                {lmStudioStatus === 'offline' && (
-                  <>
-                    <XCircle className="w-3.5 h-3.5 text-red-400" />
-                    <span className="text-red-400">LM Studio not reachable</span>
-                  </>
-                )}
-                <button
-                  onClick={refreshLMStudio}
-                  className="text-neutral-500 hover:text-neutral-300 ml-auto text-xs"
-                >
-                  Refresh
-                </button>
-              </div>
-
-              {lmStudioStatus === 'offline' && (
-                <LMStudioOfflineHelp onRetry={refreshLMStudio} />
-              )}
-
-              {/* LM Studio URL */}
-              <div>
-                <label className="text-xs text-neutral-400 block mb-1.5">LM Studio URL</label>
-                <input
-                  type="text"
-                  value={config.url ?? 'http://localhost:1234/v1'}
-                  onChange={(e) => onConfigChange({ ...config, url: e.target.value })}
-                  placeholder="http://localhost:1234/v1"
-                  className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-blue-500"
-                />
-                <p className="text-[10px] text-neutral-500 mt-1">
-                  OpenAI-compatible endpoint. Enable in LM Studio → Developer → Start Server, and check "Allow Browser Access".
-                </p>
-              </div>
-
-              {lmStudioStatus === 'online' && (
-                <>
-                  {/* Text Model (Call 1) */}
-                  <div>
-                    <label className="text-xs text-neutral-400 block mb-1.5">
-                      Text Model <span className="text-neutral-600">(Call 1: slice planning)</span>
-                    </label>
-                    <LMStudioModelDropdown
-                      value={lmStudioText}
-                      models={lmStudioModels}
-                      onChange={(m) => onConfigChange({ ...config, textModel: m })}
-                    />
-                  </div>
-
-                  {/* Vision Model (Call 2) */}
-                  <div>
-                    <label className="text-xs text-neutral-400 block mb-1.5">
-                      Vision Model <span className="text-neutral-600">(Call 2: image analysis — load a multimodal model)</span>
-                    </label>
-                    <LMStudioModelDropdown
-                      value={lmStudioVision}
-                      models={lmStudioModels}
-                      onChange={(m) => onConfigChange({ ...config, visionModel: m })}
-                    />
-                    <p className="text-[10px] text-neutral-500 mt-1">
-                      Vision requires a multimodal model (e.g., Llama 3.2 Vision, Qwen2-VL, LLaVA). Load it in LM Studio before running analysis.
-                    </p>
-                  </div>
-
-                  {lmStudioModels.length === 0 && (
-                    <div className="bg-neutral-900 rounded-lg px-3 py-2 text-xs text-neutral-400">
-                      No models loaded in LM Studio. Load a model in the LM Studio app, then click Refresh.
-                    </div>
-                  )}
-                </>
-              )}
-            </>
+            <LMStudioFields config={config} onConfigChange={onConfigChange} />
           )}
         </div>
       </div>
     </div>
+  );
+}
+
+// --- Per-provider field sections ---
+
+function ClaudeFields({ config, onConfigChange }: { config: ClaudeConfig; onConfigChange: ConfigChangeHandler }) {
+  return (
+    <div>
+      <label className="text-xs text-neutral-400 block mb-1.5">API Key</label>
+      <input
+        type="password"
+        value={config.apiKey}
+        onChange={(e) => onConfigChange({ ...config, apiKey: e.target.value })}
+        placeholder="sk-ant-..."
+        className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-blue-500"
+      />
+      <p className="text-[10px] text-neutral-500 mt-1">
+        Stored in localStorage only. Never sent to our servers.
+      </p>
+    </div>
+  );
+}
+
+function OllamaFields({ config, onConfigChange }: { config: OllamaConfig; onConfigChange: ConfigChangeHandler }) {
+  const [status, setStatus] = useState<'unknown' | 'checking' | 'online' | 'offline'>('unknown');
+  const [installedModels, setInstalledModels] = useState<OllamaModelInfo[]>([]);
+  const [pulling, setPulling] = useState<{ model: string; status: string; percent: number | null } | null>(null);
+
+  const baseUrl = config.url ?? 'http://localhost:11434';
+  const textModel = config.textModel ?? 'alibayram/medgemma:4b';
+  const visionModel = config.visionModel ?? 'llava:7b';
+
+  const refresh = useCallback(async () => {
+    setStatus('checking');
+    const online = await pingOllama(baseUrl);
+    setStatus(online ? 'online' : 'offline');
+    setInstalledModels(online ? await fetchOllamaModels(baseUrl) : []);
+  }, [baseUrl]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const handlePull = async (modelName: string) => {
+    setPulling({ model: modelName, status: 'Starting...', percent: null });
+    const success = await pullOllamaModel(
+      modelName,
+      (s, percent) => setPulling({ model: modelName, status: s, percent }),
+      baseUrl,
+    );
+    if (success) await refresh();
+    setTimeout(() => setPulling(null), 1500);
+  };
+
+  const isInstalled = (name: string) =>
+    installedModels.some((m) => m.name === name || m.name === name.replace(':latest', '') || m.name + ':latest' === name);
+
+  return (
+    <>
+      {/* Status */}
+      <div className="flex items-center gap-2 text-xs">
+        {status === 'checking' && (
+          <>
+            <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
+            <span className="text-neutral-400">Connecting...</span>
+          </>
+        )}
+        {status === 'online' && (
+          <>
+            <CheckCircle className="w-3.5 h-3.5 text-green-400" />
+            <span className="text-green-400">Ollama running</span>
+            <span className="text-neutral-500">({installedModels.length} model{installedModels.length !== 1 ? 's' : ''})</span>
+          </>
+        )}
+        {status === 'offline' && (
+          <>
+            <XCircle className="w-3.5 h-3.5 text-red-400" />
+            <span className="text-red-400">Ollama not running</span>
+          </>
+        )}
+        <button onClick={refresh} className="text-neutral-500 hover:text-neutral-300 ml-auto text-xs">
+          Refresh
+        </button>
+      </div>
+
+      {status === 'offline' && <OllamaOfflineHelp onRetry={refresh} />}
+
+      {/* Ollama URL */}
+      <div>
+        <label className="text-xs text-neutral-400 block mb-1.5">Ollama URL</label>
+        <input
+          type="text"
+          value={config.url ?? 'http://localhost:11434'}
+          onChange={(e) => onConfigChange({ ...config, url: e.target.value })}
+          placeholder="http://localhost:11434"
+          className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-blue-500"
+        />
+      </div>
+
+      {status === 'online' && (
+        <>
+          {/* Text Model (Call 1) */}
+          <div>
+            <label className="text-xs text-neutral-400 block mb-1.5">
+              Text Model <span className="text-neutral-600">(Call 1: slice planning)</span>
+            </label>
+            <ModelDropdown
+              value={textModel}
+              models={installedModels}
+              onChange={(m) => onConfigChange({ ...config, textModel: m })}
+            />
+          </div>
+
+          {/* Vision Model (Call 2) */}
+          <div>
+            <label className="text-xs text-neutral-400 block mb-1.5">
+              Vision Model <span className="text-neutral-600">(Call 2: image analysis)</span>
+            </label>
+            <ModelDropdown
+              value={visionModel}
+              models={installedModels}
+              onChange={(m) => onConfigChange({ ...config, visionModel: m })}
+            />
+          </div>
+
+          {/* Recommended Models */}
+          <div>
+            <label className="text-xs text-neutral-400 block mb-2">Available Models</label>
+            <div className="space-y-1.5">
+              {RECOMMENDED_MODELS.map((rm) => {
+                const installed = isInstalled(rm.name);
+                const isPulling = pulling?.model === rm.name;
+                return (
+                  <div
+                    key={rm.name}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs ${
+                      installed ? 'bg-neutral-900' : 'bg-neutral-900/50 border border-dashed border-neutral-700'
+                    }`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-neutral-200 font-medium">{rm.label}</span>
+                        <RoleBadge role={rm.role} />
+                        {installed && <CheckCircle className="w-3 h-3 text-green-500" />}
+                      </div>
+                      <p className="text-neutral-500 text-[10px] mt-0.5">{rm.desc}</p>
+                    </div>
+                    {!installed && !isPulling && (
+                      <button
+                        onClick={() => handlePull(rm.name)}
+                        disabled={!!pulling}
+                        className="shrink-0 flex items-center gap-1 px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-medium disabled:opacity-30"
+                      >
+                        <Download className="w-3 h-3" />
+                        Pull
+                      </button>
+                    )}
+                    {isPulling && (
+                      <div className="shrink-0 text-right">
+                        <div className="flex items-center gap-1 text-blue-400">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          <span className="text-[10px]">{pulling.percent != null ? `${pulling.percent}%` : '...'}</span>
+                        </div>
+                      </div>
+                    )}
+                    {installed && !isPulling && (
+                      <div className="shrink-0 flex gap-1">
+                        {(rm.role === 'text' || rm.role === 'both') && (
+                          <button
+                            onClick={() => onConfigChange({ ...config, textModel: rm.name })}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                              textModel === rm.name
+                                ? 'bg-purple-600 text-white'
+                                : 'bg-neutral-700 text-neutral-400 hover:text-neutral-200'
+                            }`}
+                          >
+                            Text
+                          </button>
+                        )}
+                        {(rm.role === 'vision' || rm.role === 'both') && (
+                          <button
+                            onClick={() => onConfigChange({ ...config, visionModel: rm.name })}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                              visionModel === rm.name
+                                ? 'bg-teal-600 text-white'
+                                : 'bg-neutral-700 text-neutral-400 hover:text-neutral-200'
+                            }`}
+                          >
+                            Vision
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Pull progress bar */}
+          {pulling && (
+            <div className="bg-neutral-900 rounded-lg px-3 py-2">
+              <div className="flex items-center justify-between text-xs mb-1">
+                <span className="text-neutral-300 font-mono">{pulling.model}</span>
+                <span className="text-neutral-500">{pulling.percent != null ? `${pulling.percent}%` : pulling.status}</span>
+              </div>
+              {pulling.percent != null && (
+                <div className="h-1 bg-neutral-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                    style={{ width: `${pulling.percent}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+function LMStudioFields({ config, onConfigChange }: { config: LMStudioConfig; onConfigChange: ConfigChangeHandler }) {
+  const [status, setStatus] = useState<'unknown' | 'checking' | 'online' | 'offline'>('unknown');
+  const [models, setModels] = useState<LMStudioModelInfo[]>([]);
+
+  const baseUrl = config.url ?? 'http://localhost:1234/v1';
+  const textModel = config.textModel ?? 'local-model';
+  const visionModel = config.visionModel ?? config.textModel ?? 'local-model';
+
+  const refresh = useCallback(async () => {
+    setStatus('checking');
+    const online = await pingLMStudio(baseUrl);
+    setStatus(online ? 'online' : 'offline');
+    setModels(online ? await fetchLMStudioModels(baseUrl) : []);
+  }, [baseUrl]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  return (
+    <>
+      {/* Status */}
+      <div className="flex items-center gap-2 text-xs">
+        {status === 'checking' && (
+          <>
+            <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
+            <span className="text-neutral-400">Connecting...</span>
+          </>
+        )}
+        {status === 'online' && (
+          <>
+            <CheckCircle className="w-3.5 h-3.5 text-green-400" />
+            <span className="text-green-400">LM Studio running</span>
+            <span className="text-neutral-500">({models.length} model{models.length !== 1 ? 's' : ''} loaded)</span>
+          </>
+        )}
+        {status === 'offline' && (
+          <>
+            <XCircle className="w-3.5 h-3.5 text-red-400" />
+            <span className="text-red-400">LM Studio not reachable</span>
+          </>
+        )}
+        <button onClick={refresh} className="text-neutral-500 hover:text-neutral-300 ml-auto text-xs">
+          Refresh
+        </button>
+      </div>
+
+      {status === 'offline' && <LMStudioOfflineHelp onRetry={refresh} />}
+
+      {/* LM Studio URL */}
+      <div>
+        <label className="text-xs text-neutral-400 block mb-1.5">LM Studio URL</label>
+        <input
+          type="text"
+          value={config.url ?? 'http://localhost:1234/v1'}
+          onChange={(e) => onConfigChange({ ...config, url: e.target.value })}
+          placeholder="http://localhost:1234/v1"
+          className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-blue-500"
+        />
+        <p className="text-[10px] text-neutral-500 mt-1">
+          OpenAI-compatible endpoint. Enable in LM Studio → Developer → Start Server, and check "Allow Browser Access".
+        </p>
+      </div>
+
+      {status === 'online' && (
+        <>
+          {/* Text Model (Call 1) */}
+          <div>
+            <label className="text-xs text-neutral-400 block mb-1.5">
+              Text Model <span className="text-neutral-600">(Call 1: slice planning)</span>
+            </label>
+            <LMStudioModelDropdown
+              value={textModel}
+              models={models}
+              onChange={(m) => onConfigChange({ ...config, textModel: m })}
+            />
+          </div>
+
+          {/* Vision Model (Call 2) */}
+          <div>
+            <label className="text-xs text-neutral-400 block mb-1.5">
+              Vision Model <span className="text-neutral-600">(Call 2: image analysis — load a multimodal model)</span>
+            </label>
+            <LMStudioModelDropdown
+              value={visionModel}
+              models={models}
+              onChange={(m) => onConfigChange({ ...config, visionModel: m })}
+            />
+            <p className="text-[10px] text-neutral-500 mt-1">
+              Vision requires a multimodal model (e.g., Llama 3.2 Vision, Qwen2-VL, LLaVA). Load it in LM Studio before running analysis.
+            </p>
+          </div>
+
+          {models.length === 0 && (
+            <div className="bg-neutral-900 rounded-lg px-3 py-2 text-xs text-neutral-400">
+              No models loaded in LM Studio. Load a model in the LM Studio app, then click Refresh.
+            </div>
+          )}
+        </>
+      )}
+    </>
   );
 }
 
