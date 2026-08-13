@@ -31,15 +31,28 @@ export interface ChatMessage {
   timestamp: number;
 }
 
-export type ProviderType = 'claude' | 'ollama';
+export type ProviderType = 'claude' | 'ollama' | 'lmstudio';
 
-export interface ProviderConfig {
-  provider: ProviderType;
-  apiKey?: string;           // Claude only
-  ollamaTextModel?: string;  // Ollama model for Call 1 (text-only planning)
-  ollamaVisionModel?: string; // Ollama model for Call 2 (multimodal analysis)
-  ollamaUrl?: string;        // Ollama base URL override
+export interface ClaudeConfig {
+  provider: 'claude';
+  apiKey: string;
 }
+
+export interface OllamaConfig {
+  provider: 'ollama';
+  url?: string;            // Base URL override (default http://localhost:11434)
+  textModel?: string;      // Call 1 (text-only planning)
+  visionModel?: string;    // Call 2 (multimodal analysis)
+}
+
+export interface LMStudioConfig {
+  provider: 'lmstudio';
+  url?: string;            // OpenAI-compatible base URL (default http://localhost:1234/v1)
+  textModel?: string;      // Call 1 (text-only planning)
+  visionModel?: string;    // Call 2 (multimodal analysis)
+}
+
+export type ProviderConfig = ClaudeConfig | OllamaConfig | LMStudioConfig;
 
 export interface ViewportContext {
   currentInstanceNumber: number;
