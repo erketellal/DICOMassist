@@ -5,7 +5,10 @@ import {
   pingOllama,
   fetchOllamaModels,
   pullOllamaModel,
+  pingLMStudio,
+  fetchLMStudioModels,
   type OllamaModelInfo,
+  type LMStudioModelInfo,
 } from '../llm/LLMServiceFactory';
 
 interface SettingsPanelProps {
@@ -39,9 +42,12 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
   const [ollamaStatus, setOllamaStatus] = useState<'unknown' | 'checking' | 'online' | 'offline'>('unknown');
   const [installedModels, setInstalledModels] = useState<OllamaModelInfo[]>([]);
   const [pulling, setPulling] = useState<{ model: string; status: string; percent: number | null } | null>(null);
+  const [lmStudioStatus, setLmStudioStatus] = useState<'unknown' | 'checking' | 'online' | 'offline'>('unknown');
+  const [lmStudioModels, setLmStudioModels] = useState<LMStudioModelInfo[]>([]);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  const baseUrl = config.ollamaUrl || 'http://localhost:11434';
+  const baseUrl = config.provider === 'ollama' ? config.url ?? 'http://localhost:11434' : 'http://localhost:11434';
+  const lmStudioBaseUrl = config.provider === 'lmstudio' ? config.url ?? 'http://localhost:1234/v1' : 'http://localhost:1234/v1';
 
   // Close on outside click
   useEffect(() => {
@@ -67,12 +73,31 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
     }
   }, [baseUrl]);
 
+  const refreshLMStudio = useCallback(async () => {
+    setLmStudioStatus('checking');
+    const online = await pingLMStudio(lmStudioBaseUrl);
+    setLmStudioStatus(online ? 'online' : 'offline');
+    if (online) {
+      const models = await fetchLMStudioModels(lmStudioBaseUrl);
+      setLmStudioModels(models);
+    } else {
+      setLmStudioModels([]);
+    }
+  }, [lmStudioBaseUrl]);
+
   // Check Ollama when panel opens or provider changes to ollama
   useEffect(() => {
     if (open && config.provider === 'ollama') {
       refreshModels();
     }
   }, [open, config.provider, refreshModels]);
+
+  // Check LM Studio when panel opens or provider changes to lmstudio
+  useEffect(() => {
+    if (open && config.provider === 'lmstudio') {
+      refreshLMStudio();
+    }
+  }, [open, config.provider, refreshLMStudio]);
 
   const handlePull = async (modelName: string) => {
     setPulling({ model: modelName, status: 'Starting...', percent: null });
@@ -91,14 +116,27 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
   if (!open) return null;
 
   const setProvider = (provider: ProviderType) => {
-    onConfigChange({ ...config, provider });
+    // Switching provider builds a fresh config for that variant. We preserve
+    // the Claude API key across switches so the user doesn't have to re-enter it.
+    if (provider === 'claude') {
+      const existingKey = config.provider === 'claude' ? config.apiKey : '';
+      onConfigChange({ provider: 'claude', apiKey: existingKey });
+    } else if (provider === 'ollama') {
+      onConfigChange({ provider: 'ollama' });
+    } else {
+      onConfigChange({ provider: 'lmstudio' });
+    }
   };
 
   const isInstalled = (name: string) =>
     installedModels.some((m) => m.name === name || m.name === name.replace(':latest', '') || m.name + ':latest' === name);
 
-  const textModel = config.ollamaTextModel || 'alibayram/medgemma:4b';
-  const visionModel = config.ollamaVisionModel || 'llava:7b';
+  const textModel = config.provider === 'ollama' ? config.textModel || 'alibayram/medgemma:4b' : 'alibayram/medgemma:4b';
+  const visionModel = config.provider === 'ollama' ? config.visionModel || 'llava:7b' : 'llava:7b';
+  const lmStudioText = config.provider === 'lmstudio' ? config.textModel || 'local-model' : 'local-model';
+  const lmStudioVision = config.provider === 'lmstudio'
+    ? config.visionModel || config.textModel || 'local-model'
+    : 'local-model';
 
   return (
     <div className="fixed inset-0 z-40" onClick={onClose}>
@@ -134,7 +172,15 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
                   config.provider === 'ollama' ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-neutral-200'
                 }`}
               >
-                Ollama (Local)
+                Ollama
+              </button>
+              <button
+                onClick={() => setProvider('lmstudio')}
+                className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  config.provider === 'lmstudio' ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-neutral-200'
+                }`}
+              >
+                LM Studio
               </button>
             </div>
           </div>
@@ -145,7 +191,7 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
               <label className="text-xs text-neutral-400 block mb-1.5">API Key</label>
               <input
                 type="password"
-                value={config.apiKey ?? ''}
+                value={config.apiKey}
                 onChange={(e) => onConfigChange({ ...config, apiKey: e.target.value })}
                 placeholder="sk-ant-..."
                 className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-blue-500"
@@ -197,8 +243,8 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
                 <label className="text-xs text-neutral-400 block mb-1.5">Ollama URL</label>
                 <input
                   type="text"
-                  value={config.ollamaUrl ?? 'http://localhost:11434'}
-                  onChange={(e) => onConfigChange({ ...config, ollamaUrl: e.target.value })}
+                  value={config.url ?? 'http://localhost:11434'}
+                  onChange={(e) => onConfigChange({ ...config, url: e.target.value })}
                   placeholder="http://localhost:11434"
                   className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-blue-500"
                 />
@@ -214,7 +260,7 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
                     <ModelDropdown
                       value={textModel}
                       models={installedModels}
-                      onChange={(m) => onConfigChange({ ...config, ollamaTextModel: m })}
+                      onChange={(m) => onConfigChange({ ...config, textModel: m })}
                     />
                   </div>
 
@@ -226,7 +272,7 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
                     <ModelDropdown
                       value={visionModel}
                       models={installedModels}
-                      onChange={(m) => onConfigChange({ ...config, ollamaVisionModel: m })}
+                      onChange={(m) => onConfigChange({ ...config, visionModel: m })}
                     />
                   </div>
 
@@ -274,7 +320,7 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
                               <div className="shrink-0 flex gap-1">
                                 {(rm.role === 'text' || rm.role === 'both') && (
                                   <button
-                                    onClick={() => onConfigChange({ ...config, ollamaTextModel: rm.name })}
+                                    onClick={() => onConfigChange({ ...config, textModel: rm.name })}
                                     className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
                                       textModel === rm.name
                                         ? 'bg-purple-600 text-white'
@@ -286,7 +332,7 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
                                 )}
                                 {(rm.role === 'vision' || rm.role === 'both') && (
                                   <button
-                                    onClick={() => onConfigChange({ ...config, ollamaVisionModel: rm.name })}
+                                    onClick={() => onConfigChange({ ...config, visionModel: rm.name })}
                                     className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
                                       visionModel === rm.name
                                         ? 'bg-teal-600 text-white'
@@ -319,6 +365,96 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
                           />
                         </div>
                       )}
+                    </div>
+                  )}
+                </>
+              )}
+            </>
+          )}
+
+          {/* LM Studio fields */}
+          {config.provider === 'lmstudio' && (
+            <>
+              {/* Status */}
+              <div className="flex items-center gap-2 text-xs">
+                {lmStudioStatus === 'checking' && (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin" />
+                    <span className="text-neutral-400">Connecting...</span>
+                  </>
+                )}
+                {lmStudioStatus === 'online' && (
+                  <>
+                    <CheckCircle className="w-3.5 h-3.5 text-green-400" />
+                    <span className="text-green-400">LM Studio running</span>
+                    <span className="text-neutral-500">({lmStudioModels.length} model{lmStudioModels.length !== 1 ? 's' : ''} loaded)</span>
+                  </>
+                )}
+                {lmStudioStatus === 'offline' && (
+                  <>
+                    <XCircle className="w-3.5 h-3.5 text-red-400" />
+                    <span className="text-red-400">LM Studio not reachable</span>
+                  </>
+                )}
+                <button
+                  onClick={refreshLMStudio}
+                  className="text-neutral-500 hover:text-neutral-300 ml-auto text-xs"
+                >
+                  Refresh
+                </button>
+              </div>
+
+              {lmStudioStatus === 'offline' && (
+                <LMStudioOfflineHelp onRetry={refreshLMStudio} />
+              )}
+
+              {/* LM Studio URL */}
+              <div>
+                <label className="text-xs text-neutral-400 block mb-1.5">LM Studio URL</label>
+                <input
+                  type="text"
+                  value={config.url ?? 'http://localhost:1234/v1'}
+                  onChange={(e) => onConfigChange({ ...config, url: e.target.value })}
+                  placeholder="http://localhost:1234/v1"
+                  className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none focus:border-blue-500"
+                />
+                <p className="text-[10px] text-neutral-500 mt-1">
+                  OpenAI-compatible endpoint. Enable in LM Studio → Developer → Start Server, and check "Allow Browser Access".
+                </p>
+              </div>
+
+              {lmStudioStatus === 'online' && (
+                <>
+                  {/* Text Model (Call 1) */}
+                  <div>
+                    <label className="text-xs text-neutral-400 block mb-1.5">
+                      Text Model <span className="text-neutral-600">(Call 1: slice planning)</span>
+                    </label>
+                    <LMStudioModelDropdown
+                      value={lmStudioText}
+                      models={lmStudioModels}
+                      onChange={(m) => onConfigChange({ ...config, textModel: m })}
+                    />
+                  </div>
+
+                  {/* Vision Model (Call 2) */}
+                  <div>
+                    <label className="text-xs text-neutral-400 block mb-1.5">
+                      Vision Model <span className="text-neutral-600">(Call 2: image analysis — load a multimodal model)</span>
+                    </label>
+                    <LMStudioModelDropdown
+                      value={lmStudioVision}
+                      models={lmStudioModels}
+                      onChange={(m) => onConfigChange({ ...config, visionModel: m })}
+                    />
+                    <p className="text-[10px] text-neutral-500 mt-1">
+                      Vision requires a multimodal model (e.g., Llama 3.2 Vision, Qwen2-VL, LLaVA). Load it in LM Studio before running analysis.
+                    </p>
+                  </div>
+
+                  {lmStudioModels.length === 0 && (
+                    <div className="bg-neutral-900 rounded-lg px-3 py-2 text-xs text-neutral-400">
+                      No models loaded in LM Studio. Load a model in the LM Studio app, then click Refresh.
                     </div>
                   )}
                 </>
@@ -466,6 +602,137 @@ function ModelDropdown({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function LMStudioModelDropdown({
+  value,
+  models,
+  onChange,
+}: {
+  value: string;
+  models: LMStudioModelInfo[];
+  onChange: (model: string) => void;
+}) {
+  const [dropOpen, setDropOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!dropOpen) return;
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setDropOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [dropOpen]);
+
+  const options = models.length > 0 ? models.map((m) => m.id) : [];
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setDropOpen(!dropOpen)}
+        className="w-full flex items-center justify-between bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-neutral-100 hover:border-neutral-600"
+      >
+        <span className="truncate">{value}</span>
+        <ChevronDown className={`w-4 h-4 text-neutral-500 transition-transform ${dropOpen ? 'rotate-180' : ''}`} />
+      </button>
+      {dropOpen && (
+        <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-neutral-800 border border-neutral-700 rounded-lg shadow-xl py-1 max-h-48 overflow-y-auto">
+          {options.map((id) => (
+            <button
+              key={id}
+              onClick={() => {
+                onChange(id);
+                setDropOpen(false);
+              }}
+              className={`flex items-center w-full px-3 py-1.5 text-sm text-left transition-colors ${
+                value === id ? 'bg-blue-600/20 text-blue-400' : 'text-neutral-300 hover:bg-neutral-700'
+              }`}
+            >
+              <span className="truncate">{id}</span>
+            </button>
+          ))}
+          {options.length === 0 && (
+            <div className="px-3 py-2 text-xs text-neutral-500">No models loaded</div>
+          )}
+          {/* Always allow the free-text default */}
+          {!options.includes(value) && options.length > 0 && (
+            <button
+              onClick={() => {
+                onChange(value);
+                setDropOpen(false);
+              }}
+              className={`flex items-center w-full px-3 py-1.5 text-sm text-left transition-colors ${
+                'bg-blue-600/20 text-blue-400'
+              }`}
+            >
+              <span className="truncate">{value}</span>
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- LM Studio Offline Help ---
+
+function LMStudioOfflineHelp({ onRetry }: { onRetry: () => void }) {
+  const [polling, setPolling] = useState(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const startPolling = () => {
+    setPolling(true);
+    intervalRef.current = setInterval(async () => {
+      const ok = await pingLMStudio();
+      if (ok) {
+        setPolling(false);
+        if (intervalRef.current) clearInterval(intervalRef.current);
+        onRetry();
+      }
+    }, 2000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, []);
+
+  return (
+    <div className="bg-neutral-900 rounded-lg px-3 py-3 space-y-2.5">
+      <div className="text-xs text-neutral-400">
+        Can't reach LM Studio. In the LM Studio app:
+      </div>
+      <ol className="text-[11px] text-neutral-400 space-y-1 list-decimal list-inside">
+        <li>Open the <span className="text-neutral-200">Developer</span> tab</li>
+        <li>Click <span className="text-neutral-200">Start Server</span></li>
+        <li>Enable <span className="text-neutral-200">Allow Browser Access</span> (CORS)</li>
+        <li>Load a model in the sidebar</li>
+      </ol>
+      <div className="flex items-center gap-2">
+        {!polling ? (
+          <button
+            onClick={startPolling}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
+          >
+            <RefreshCw className="w-3 h-3" />
+            Wait for LM Studio...
+          </button>
+        ) : (
+          <div className="flex items-center gap-1.5 text-xs text-blue-400">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            Waiting for LM Studio server...
+          </div>
+        )}
+      </div>
+      <div className="text-[10px] text-neutral-600">
+        Don't have LM Studio? <a href="https://lmstudio.ai" target="_blank" rel="noopener" className="text-blue-500 hover:text-blue-400 underline">Download it here</a>
+      </div>
     </div>
   );
 }

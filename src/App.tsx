@@ -23,7 +23,29 @@ const STORAGE_KEY = 'dicomassist-llm-config';
 function loadConfig(): ProviderConfig {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) return JSON.parse(saved);
+    if (saved) {
+      const parsed = JSON.parse(saved) as Record<string, unknown> & { provider?: string };
+      switch (parsed.provider) {
+        case 'claude':
+          return { provider: 'claude', apiKey: (parsed.apiKey as string) ?? '' };
+        case 'ollama':
+          return {
+            provider: 'ollama',
+            url: (parsed.url as string) ?? (parsed.ollamaUrl as string),
+            textModel: (parsed.textModel as string) ?? (parsed.ollamaTextModel as string),
+            visionModel: (parsed.visionModel as string) ?? (parsed.ollamaVisionModel as string),
+          };
+        case 'lmstudio':
+          return {
+            provider: 'lmstudio',
+            url: (parsed.url as string) ?? (parsed.lmStudioUrl as string),
+            textModel: (parsed.textModel as string) ?? (parsed.lmStudioTextModel as string),
+            visionModel: (parsed.visionModel as string) ?? (parsed.lmStudioVisionModel as string),
+          };
+        default:
+          return { provider: 'ollama' };
+      }
+    }
   } catch { /* ignore */ }
   return { provider: 'ollama' };
 }
