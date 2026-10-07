@@ -214,8 +214,22 @@ export function useLLMChat(
     setError(null);
 
     // Initialize pipeline
-    const textModel = providerConfig.provider === 'ollama' ? (providerConfig.ollamaTextModel || 'alibayram/medgemma:4b') : 'claude';
-    const visionModel = providerConfig.provider === 'ollama' ? (providerConfig.ollamaVisionModel || 'llava:7b') : 'claude';
+    let textModel: string;
+    let visionModel: string;
+    switch (providerConfig.provider) {
+      case 'claude':
+        textModel = 'claude';
+        visionModel = 'claude';
+        break;
+      case 'lmstudio':
+        textModel = providerConfig.textModel || 'local-model';
+        visionModel = providerConfig.visionModel || providerConfig.textModel || 'local-model';
+        break;
+      case 'ollama':
+        textModel = providerConfig.textModel || 'alibayram/medgemma:4b';
+        visionModel = providerConfig.visionModel || 'llava:7b';
+        break;
+    }
     const initialSteps: PipelineStep[] = [
       { id: 'plan', label: `Selection planning (${textModel})`, status: 'pending' },
       { id: 'select', label: 'Selecting slices', status: 'pending' },

@@ -329,21 +329,168 @@ class OllamaService implements LLMService {
   }
 }
 
+// --- LM Studio Service (OpenAI-compatible API) ---
+
+class LMStudioService implements LLMService {
+  private baseUrl: string; // e.g. http://localhost:1234/v1
+  private textModel: string;
+  private visionModel: string;
+
+  constructor(textModel: string, visionModel: string, baseUrl: string) {
+    this.textModel = textModel;
+    this.visionModel = visionModel;
+    this.baseUrl = baseUrl;
+  }
+
+  async getSelectionPlan(metadata: StudyMetadata, clinicalHint: string, viewportContext?: ViewportContext): Promise<SelectionPlan> {
+    const response = await this.callLMStudio({
+      model: this.textModel,
+      system: buildSelectionSystemPrompt(),
+      userContent: buildSelectionUserPrompt(metadata, clinicalHint, viewportContext),
+      maxTokens: 1024,
+    });
+    return parseSelectionPlan(response);
+  }
+
+  async analyzeSlices(
+    images: Blob[],
+    metadata: StudyMetadata,
+    clinicalHint: string,
+    plan: SelectionPlan,
+    sliceLabels: string[],
+    surveyMode?: boolean,
+  ): Promise<string> {
+    const manifest = sliceLabels.map((l, i) => `  ${i + 1}. ${l}`).join('\n');
+    const userContent =
+      `IMAGE MANIFEST (${sliceLabels.length} images, in sequential order):\n${manifest}\n\nThe images are provided in the exact order listed above.\n\n` +
+      buildAnalysisUserPrompt(metadata, clinicalHint, plan, sliceLabels);
+
+    const base64Images = await Promise.all(images.map(blobToBase64));
+
+    return this.callLMStudio({
+      model: this.visionModel,
+      system: buildAnalysisSystemPrompt(surveyMode),
+      userContent,
+      images: base64Images,
+      maxTokens: 4096,
+    });
+  }
+
+  async sendFollowUp(conversationHistory: ChatMessage[], metadata: StudyMetadata): Promise<string> {
+    const messages = [
+      { role: 'system' as const, content: buildFollowUpSystemPrompt() + '\n\nStudy context: ' + metadata.studyDescription },
+      ...conversationHistory.map((msg) => ({
+        role: msg.role as 'user' | 'assistant',
+        content: msg.content,
+      })),
+    ];
+
+    const data = await this.rawChat(this.textModel, messages, 4096);
+    return data.choices?.[0]?.message?.content ?? '';
+  }
+
+  private async callLMStudio(params: {
+    model: string;
+    system: string;
+    userContent: string;
+    images?: string[];
+    maxTokens: number;
+  }): Promise<string> {
+    const userMessage: ChatCompletionMessage = params.images?.length
+      ? {
+          role: 'user',
+          content: [
+            { type: 'text', text: params.userContent },
+            ...params.images.map((data) => ({
+              type: 'image_url' as const,
+              image_url: { url: `data:image/jpeg;base64,${data}` },
+            })),
+          ],
+        }
+      : { role: 'user', content: params.userContent };
+
+    const messages: ChatCompletionMessage[] = [
+      { role: 'system', content: params.system },
+      userMessage,
+    ];
+
+    const data = await this.rawChat(params.model, messages, params.maxTokens);
+    return data.choices?.[0]?.message?.content ?? '';
+  }
+
+  private async rawChat(
+    model: string,
+    messages: ChatCompletionMessage[],
+    maxTokens: number,
+  ): Promise<ChatCompletionResponse> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: 0,
+          max_tokens: maxTokens,
+          stream: false,
+        }),
+        signal: AbortSignal.timeout(300_000),
+      });
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'TimeoutError') {
+        throw new Error(`LM Studio request timed out (5min). Model: ${model}. Try fewer slices or a smaller model.`);
+      }
+      throw new Error('Cannot connect to LM Studio. Is the local server running? (LM Studio → Developer → Start Server)');
+    }
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`LM Studio error (${res.status}): ${body}`);
+    }
+
+    return (await res.json()) as ChatCompletionResponse;
+  }
+}
+
+interface ChatCompletionMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string | Array<
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string } }
+  >;
+}
+
+interface ChatCompletionResponse {
+  choices?: Array<{ message?: { role: string; content: string } }>;
+}
+
 // --- Factory ---
 
 const DEFAULT_TEXT_MODEL = 'alibayram/medgemma:4b';
 const DEFAULT_VISION_MODEL = 'gemma3:4b';
+const DEFAULT_LMSTUDIO_URL = 'http://localhost:1234/v1';
 
 export function createLLMService(config: ProviderConfig): LLMService {
-  if (config.provider === 'claude') {
-    const key = config.apiKey || import.meta.env.VITE_ANTHROPIC_API_KEY;
-    if (!key) throw new Error('Claude API key is required. Enter it in Settings.');
-    return new ClaudeService(key);
+  switch (config.provider) {
+    case 'claude': {
+      const key = config.apiKey || import.meta.env.VITE_ANTHROPIC_API_KEY;
+      if (!key) throw new Error('Claude API key is required. Enter it in Settings.');
+      return new ClaudeService(key);
+    }
+    case 'lmstudio': {
+      const baseUrl = (config.url || DEFAULT_LMSTUDIO_URL).replace(/\/+$/, '');
+      const textModel = config.textModel || 'local-model';
+      const visionModel = config.visionModel || config.textModel || 'local-model';
+      return new LMStudioService(textModel, visionModel, baseUrl);
+    }
+    case 'ollama': {
+      const baseUrl = config.url || 'http://localhost:11434';
+      const textModel = config.textModel || DEFAULT_TEXT_MODEL;
+      const visionModel = config.visionModel || DEFAULT_VISION_MODEL;
+      return new OllamaService(textModel, visionModel, baseUrl);
+    }
   }
-  const baseUrl = config.ollamaUrl || 'http://localhost:11434';
-  const textModel = config.ollamaTextModel || DEFAULT_TEXT_MODEL;
-  const visionModel = config.ollamaVisionModel || DEFAULT_VISION_MODEL;
-  return new OllamaService(textModel, visionModel, baseUrl);
 }
 
 // --- Ollama Management API ---
@@ -425,6 +572,44 @@ export async function pullOllamaModel(
     return true;
   } catch {
     onProgress('Connection failed', null);
+    return false;
+  }
+}
+
+// --- LM Studio Management API (OpenAI-compatible) ---
+
+export interface LMStudioModelInfo {
+  id: string;
+  size?: number;
+}
+
+function normalizeLMStudioBaseUrl(baseUrl: string): string {
+  // Ensure trailing /v1 for OpenAI-compatible endpoints
+  const trimmed = baseUrl.replace(/\/+$/, '');
+  return /\/v\d+$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
+}
+
+export async function fetchLMStudioModels(baseUrl = DEFAULT_LMSTUDIO_URL): Promise<LMStudioModelInfo[]> {
+  try {
+    const url = `${normalizeLMStudioBaseUrl(baseUrl)}/models`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.models ?? data.data ?? []).map((m: { id?: string; size?: number }) => ({
+      id: m.id ?? 'local-model',
+      size: m.size,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function pingLMStudio(baseUrl = DEFAULT_LMSTUDIO_URL): Promise<boolean> {
+  try {
+    const url = `${normalizeLMStudioBaseUrl(baseUrl)}/models`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    return res.ok;
+  } catch {
     return false;
   }
 }

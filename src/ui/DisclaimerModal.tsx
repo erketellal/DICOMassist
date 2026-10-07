@@ -35,7 +35,7 @@ export default function DisclaimerModal({ onAccept }: DisclaimerModalProps) {
           </li>
           <li className="flex gap-2">
             <span className="text-zinc-500 shrink-0">&bull;</span>
-            When using AI analysis, image data is sent to the selected LLM provider (e.g., Anthropic Claude API) according to their data handling policies
+            When using AI analysis, image data is sent to the selected LLM provider (e.g., Anthropic Claude API, Ollama, or LM Studio) according to their data handling policies
           </li>
         </ul>
         <p className="text-zinc-500 text-xs mb-6">
