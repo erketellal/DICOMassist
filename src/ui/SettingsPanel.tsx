@@ -18,6 +18,7 @@ interface SettingsPanelProps {
   onClose: () => void;
   config: ProviderConfig;
   onConfigChange: ConfigChangeHandler;
+  onProviderChange: (provider: ProviderType) => void;
 }
 
 interface RecommendedModel {
@@ -40,7 +41,7 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(0)}MB`;
 }
 
-export default function SettingsPanel({ open, onClose, config, onConfigChange }: SettingsPanelProps) {
+export default function SettingsPanel({ open, onClose, config, onConfigChange, onProviderChange }: SettingsPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Close on outside click
@@ -56,19 +57,6 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
   }, [open, onClose]);
 
   if (!open) return null;
-
-  const setProvider = (provider: ProviderType) => {
-    // Switching provider builds a fresh config for that variant. We preserve
-    // the Claude API key across switches so the user doesn't have to re-enter it.
-    if (provider === 'claude') {
-      const existingKey = config.provider === 'claude' ? config.apiKey : '';
-      onConfigChange({ provider: 'claude', apiKey: existingKey });
-    } else if (provider === 'ollama') {
-      onConfigChange({ provider: 'ollama' });
-    } else {
-      onConfigChange({ provider: 'lmstudio' });
-    }
-  };
 
   return (
     <div className="fixed inset-0 z-40" onClick={onClose}>
@@ -91,7 +79,7 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
             <label className="text-xs text-neutral-400 block mb-1.5">Provider</label>
             <div className="flex bg-neutral-900 rounded-lg p-0.5">
               <button
-                onClick={() => setProvider('claude')}
+                onClick={() => onProviderChange('claude')}
                 className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   config.provider === 'claude' ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-neutral-200'
                 }`}
@@ -99,7 +87,7 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
                 Claude API
               </button>
               <button
-                onClick={() => setProvider('ollama')}
+                onClick={() => onProviderChange('ollama')}
                 className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   config.provider === 'ollama' ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-neutral-200'
                 }`}
@@ -107,7 +95,7 @@ export default function SettingsPanel({ open, onClose, config, onConfigChange }:
                 Ollama
               </button>
               <button
-                onClick={() => setProvider('lmstudio')}
+                onClick={() => onProviderChange('lmstudio')}
                 className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   config.provider === 'lmstudio' ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-neutral-200'
                 }`}

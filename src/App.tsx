@@ -14,44 +14,93 @@ import DisclaimerModal from './ui/DisclaimerModal';
 import LandingScreen from './ui/LandingScreen';
 import type { AnatomicalPlane } from './dicom/orientationUtils';
 import type { StudyMetadata } from './dicom/types';
-import type { ProviderConfig, ViewportContext } from './llm/types';
+import type { ProviderConfig, ProviderType, ClaudeConfig, OllamaConfig, LMStudioConfig, ViewportContext } from './llm/types';
 import { useLLMChat, type SliceMapping } from './llm/useLLMChat';
 import { logger } from './utils/logger';
 
 const STORAGE_KEY = 'dicomassist-llm-config';
 
-function loadConfig(): ProviderConfig {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved) as Record<string, unknown> & { provider?: string };
-      switch (parsed.provider) {
-        case 'claude':
-          return { provider: 'claude', apiKey: (parsed.apiKey as string) ?? '' };
-        case 'ollama':
-          return {
-            provider: 'ollama',
-            url: (parsed.url as string) ?? (parsed.ollamaUrl as string),
-            textModel: (parsed.textModel as string) ?? (parsed.ollamaTextModel as string),
-            visionModel: (parsed.visionModel as string) ?? (parsed.ollamaVisionModel as string),
-          };
-        case 'lmstudio':
-          return {
-            provider: 'lmstudio',
-            url: (parsed.url as string) ?? (parsed.lmStudioUrl as string),
-            textModel: (parsed.textModel as string) ?? (parsed.lmStudioTextModel as string),
-            visionModel: (parsed.visionModel as string) ?? (parsed.lmStudioVisionModel as string),
-          };
-        default:
-          return { provider: 'ollama' };
-      }
-    }
-  } catch { /* ignore */ }
-  return { provider: 'ollama' };
+const PROVIDERS: ProviderType[] = ['claude', 'ollama', 'lmstudio'];
+
+// Each provider's settings are stored side by side, so switching provider
+// in the settings panel doesn't discard the others.
+interface SavedConfigs {
+  active: ProviderType;
+  claude: ClaudeConfig;
+  ollama: OllamaConfig;
+  lmstudio: LMStudioConfig;
 }
 
-function saveConfig(config: ProviderConfig) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+function defaultConfigs(): SavedConfigs {
+  return {
+    active: 'ollama',
+    claude: { provider: 'claude', apiKey: '' },
+    ollama: { provider: 'ollama' },
+    lmstudio: { provider: 'lmstudio' },
+  };
+}
+
+function isProvider(value: unknown): value is ProviderType {
+  return PROVIDERS.includes(value as ProviderType);
+}
+
+function loadConfigs(): SavedConfigs {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return defaultConfigs();
+    const parsed = JSON.parse(saved) as Record<string, unknown>;
+    const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
+
+    if (isProvider(parsed.active)) {
+      const claude = (parsed.claude ?? {}) as Partial<ClaudeConfig>;
+      const ollama = (parsed.ollama ?? {}) as Partial<OllamaConfig>;
+      const lmstudio = (parsed.lmstudio ?? {}) as Partial<LMStudioConfig>;
+      return {
+        active: parsed.active,
+        claude: { provider: 'claude', apiKey: str(claude.apiKey) ?? '' },
+        ollama: { provider: 'ollama', url: str(ollama.url), textModel: str(ollama.textModel), visionModel: str(ollama.visionModel) },
+        lmstudio: { provider: 'lmstudio', url: str(lmstudio.url), textModel: str(lmstudio.textModel), visionModel: str(lmstudio.visionModel) },
+      };
+    }
+
+    // Earlier formats stored one flat object keyed by `provider`: either
+    // prefixed fields (ollamaUrl, ...) or unprefixed fields (url, ...) that
+    // belong to whichever provider was selected.
+    const active = isProvider(parsed.provider) ? parsed.provider : 'ollama';
+    const own = (provider: ProviderType, key: string) => (active === provider ? str(parsed[key]) : undefined);
+    return {
+      active,
+      claude: { provider: 'claude', apiKey: str(parsed.apiKey) ?? '' },
+      ollama: {
+        provider: 'ollama',
+        url: own('ollama', 'url') ?? str(parsed.ollamaUrl),
+        textModel: own('ollama', 'textModel') ?? str(parsed.ollamaTextModel),
+        visionModel: own('ollama', 'visionModel') ?? str(parsed.ollamaVisionModel),
+      },
+      lmstudio: {
+        provider: 'lmstudio',
+        url: own('lmstudio', 'url') ?? str(parsed.lmStudioUrl),
+        textModel: own('lmstudio', 'textModel') ?? str(parsed.lmStudioTextModel),
+        visionModel: own('lmstudio', 'visionModel') ?? str(parsed.lmStudioVisionModel),
+      },
+    };
+  } catch { /* ignore */ }
+  return defaultConfigs();
+}
+
+function withConfig(saved: SavedConfigs, config: ProviderConfig): SavedConfigs {
+  switch (config.provider) {
+    case 'claude':
+      return { ...saved, active: 'claude', claude: config };
+    case 'ollama':
+      return { ...saved, active: 'ollama', ollama: config };
+    case 'lmstudio':
+      return { ...saved, active: 'lmstudio', lmstudio: config };
+  }
+}
+
+function saveConfigs(configs: SavedConfigs) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(configs));
 }
 
 export default function App() {
@@ -68,7 +117,8 @@ export default function App() {
   const [showMetadata, setShowMetadata] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [providerConfig, setProviderConfig] = useState<ProviderConfig>(loadConfig);
+  const [savedConfigs, setSavedConfigs] = useState<SavedConfigs>(loadConfigs);
+  const providerConfig: ProviderConfig = savedConfigs[savedConfigs.active];
   const [showSeriesBrowser, setShowSeriesBrowser] = useState(false);
   const [activeSeriesUID, setActiveSeriesUID] = useState<string>('');
   const [invert, setInvert] = useState(false);
@@ -268,9 +318,16 @@ export default function App() {
   }, []);
 
   const handleConfigChange = useCallback((config: ProviderConfig) => {
-    setProviderConfig(config);
-    saveConfig(config);
-  }, []);
+    const next = withConfig(savedConfigs, config);
+    setSavedConfigs(next);
+    saveConfigs(next);
+  }, [savedConfigs]);
+
+  const handleProviderChange = useCallback((provider: ProviderType) => {
+    const next = { ...savedConfigs, active: provider };
+    setSavedConfigs(next);
+    saveConfigs(next);
+  }, [savedConfigs]);
 
   const handleStartAnalysis = useCallback((hint: string, options?: { surveyMode?: boolean }) => {
     // Capture current viewport position as context for slice selection
@@ -555,6 +612,7 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         config={providerConfig}
         onConfigChange={handleConfigChange}
+        onProviderChange={handleProviderChange}
       />
     </div>
   );
